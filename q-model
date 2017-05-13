@@ -15,7 +15,7 @@ my $X = 25;    # Speed factor
 # Set b/g
 binmode STDOUT, ":utf8";
 print cls, locate(24, 1), WHITE ON BLACK, clup;
-print "(Q)uit (F)aster (S)lower (P)ause/unpause";
+print "(Q)uit (F)aster (S)lower (P)ause/unpause", clline;
 
 # Inits
 my $tun = tunnel->new(5, 29);
@@ -173,7 +173,7 @@ sub queue::draw_runs {
     }
 }
 
-# Move a job from old queue to new queue, putting at beginning or end of new queue
+# Move a job from one queue to another, putting at beginning or end of new queue
 sub queue::move_job {
     my $this  = shift;
     my $job   = shift;
@@ -191,7 +191,7 @@ sub queue::move_job {
             # Bubble-up all jobs after it
             my $bjob = $oldq->[$idx];
             $bjob->erase();
-            $bjob->draw($this->rc($job->{state}, $idx+1));    # draw pos is 1-based, thus idx is -1
+            $bjob->draw($this->rc($job->{state}, $idx+1));
 # XXX WORKING HERE
         }
         elsif ($job == $oldq->[$idx]) {
@@ -206,7 +206,7 @@ sub queue::move_job {
     die "*** Job not found in oldq\n" unless $found;
 
     # Add to new
-    my $pos = 1;                                            # 1-based
+    my $pos = 1;    # 1-based
     if ($atend) {
         push @$newq, $job;
         $pos = @$newq;
@@ -222,7 +222,7 @@ sub queue::move_job {
         $job->{substate} = state::SUB_INIT;
     }
 
-    # Redraw the moved job and everything it bumps
+    # Redraw the moved job and everything it bumps   XXX needed still here?
     for my $bpos ($pos .. scalar(@$newq)) {
         my $bjob = $newq->[$bpos - 1];
         $bjob->draw($this->rc($bjob->{state}, $bpos));
@@ -406,16 +406,21 @@ sub job::draw {
 
     print CLEAR ON BLACK;
     if (defined $this->{row}) {
+        # Erase from where it was before
     }
     print(
-          ($state == state::JOB_PEND) && ($tries <= 1) ? BLUE
-        : ($state == state::JOB_PEND) && ($tries < 10) ? BOLD BLUE
-        : ($state == state::JOB_PEND) ? BOLD BLUE ON YELLOW
-        : ($state == state::JOB_RUN)  ? GREEN
-        : ($state == state::JOB_DONE) ? WHITE
-        : ($state == state::JOB_FAIL) && ($tries <= 1) ? RED
-        : ($state == state::JOB_FAIL) ? BOLD RED
-        :                               YELLOW
+          ($state == state::JOB_PEND) && ($tries >= 4) ? REVERSE BOLD BLUE
+        : ($state == state::JOB_PEND) && ($tries >= 3) ? REVERSE BLUE
+        : ($state == state::JOB_PEND) && ($tries >= 2) ? BOLD BLUE
+        : ($state == state::JOB_PEND)                  ? BLUE
+        : ($state == state::JOB_RUN)                   ? GREEN
+        : ($state == state::JOB_DONE) && ($tries >= 5) ? REVERSE BOLD WHITE
+        : ($state == state::JOB_DONE) && ($tries >= 4) ? REVERSE WHITE
+        : ($state == state::JOB_DONE) && ($tries >= 3) ? BOLD WHITE
+        : ($state == state::JOB_DONE)                  ? WHITE
+        : ($state == state::JOB_FAIL) && ($tries >= 2) ? BOLD RED
+        : ($state == state::JOB_FAIL)                  ? RED
+        :                                                YELLOW
     );
 
     if ($state == state::JOB_RUN) {
@@ -433,7 +438,7 @@ sub job::draw {
 # Erase it from the screen
 sub job::erase {
     my $this = shift;
-    return unless defined $this->{row};
+    return if !defined $this->{row};
     print RESET, WHITE ON BLACK;
     print locate($this->{row},     $this->{col}), "   ";
     print locate($this->{row} + 1, $this->{col}), "   "
