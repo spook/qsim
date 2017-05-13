@@ -1,4 +1,8 @@
 #!/usr/bin/perl -w
+# Style note: I prefix sub's in packages with the package name,
+#   such as queue::new { ... } instead of just sub new { ... } .
+#   Perl doesn't require this, but I find it keeps it easier to follow
+#   since there's several packages (scopes) in this one file.
 use strict;
 use utf8;
 use Term::ANSIScreen qw/:color :cursor :screen :constants/;
@@ -20,7 +24,7 @@ for (1 .. 27) {
     $que->submit(job->new);
 }
 
-# Run until nothing pending or running
+# Run until nothing in pending or running stated
 ReadMode 'raw';
 my $t_idle = 0;
 my $pause  = 0;
@@ -36,8 +40,8 @@ while (1) {
     $X -= 10 if $key eq 'S';        # Slower by 10
     $X = 1   if $X < 1;
     $X = 250 if $X > 250;
-    $pause = !$pause if lc($key) eq 'p';    # Toggle pause
 
+    $pause = !$pause if lc($key) eq 'p';    # Toggle pause
     if ($pause) {
         usleep 100_000;
         next;
@@ -52,7 +56,7 @@ while (1) {
 
     if (!@{$que->{qpend}} && !@{$que->{qrun}}) {
         $t_idle++;
-        last if $t_idle > 60;    # Run idle for a minute
+        last if $t_idle > 60;    # Run idle for a minute before quitting
     }
     else {
         $t_idle = 0;
@@ -60,7 +64,7 @@ while (1) {
 }
 
 # Reset & done
-print locate(24, 1), RESET;
+print locate(24, 1), RESET, clline;
 ReadMode 'normal';
 exit 0;
 
@@ -79,12 +83,9 @@ sub status {
     print locate(1, 1), sprintf("%3.3d %2.2d:%2.2d:%2.2d %3dX", $d, $h, $m, $s, $X);
 
     # Queue
-    my ($np, $nr, $rl, $nf, $nd, $tot) = $que->depths();
+    my ($np, $nr, $maxr, $nf, $nd, $tot) = $que->depths();
     print locate(1, 20),
-        sprintf("Q:%dpend %d/%drun %dfail %ddone %dtot", $np, $nr, $rl, $nf, $nd, $tot);
-
-    # in case of interrupt, be at bottom
-    print locate(24, 1);
+        sprintf("Q:%dpend %d/%drun %dfail %ddone %dtot", $np, $nr, $maxr, $nf, $nd, $tot);
 }
 
 package state;
@@ -106,7 +107,7 @@ use strict;
 use utf8;
 use Term::ANSIScreen qw/:color :cursor :screen :constants/;
 
-sub new {
+sub queue::new {
     my $proto  = shift;
     my $class  = ref($proto) || $proto;    # Get the class name
     my $tunnel = shift;
@@ -127,7 +128,7 @@ sub new {
     return $this;
 }
 
-sub depths {
+sub queue::depths {
     my $this = shift;
     return (
         scalar(@{$this->{qpend}}), scalar(@{$this->{qrun}}),  $this->{maxrun},
@@ -135,7 +136,7 @@ sub depths {
     );
 }
 
-sub draw {
+sub queue::draw {
     my $this = shift;
 
     print WHITE ON BLACK;
@@ -151,7 +152,7 @@ sub draw {
     $this->draw_runs();
 }
 
-sub draw_runs {
+sub queue::draw_runs {
     my $this = shift;
 
     # Existing jobs
@@ -172,7 +173,7 @@ sub draw_runs {
     }
 }
 
-sub move_job {
+sub queue::move_job {
     my $this  = shift;
     my $job   = shift;
     my $oldq  = shift;        # array ref
@@ -226,7 +227,7 @@ sub move_job {
     }
 }
 
-sub qstate {
+sub queue::qstate {
     my $this = shift;
     my $qref = shift;
     return
@@ -237,7 +238,7 @@ sub qstate {
         :                           undef;
 }
 
-sub submit {
+sub queue::submit {
     my $this = shift;
     my $job  = shift;
     $job->{t0} = $T;    # When queued
@@ -250,7 +251,7 @@ sub submit {
 }
 
 # return queue display position row & column
-sub rc {
+sub queue::rc {
     my $this  = shift;
     my $state = shift;
     my $pos   = shift;               # starts at 1
@@ -279,7 +280,7 @@ sub rc {
 }
 
 # Run the queue
-sub tick {
+sub queue::tick {
     my $this         = shift;
     my $runs_changed = 0;
 
@@ -369,7 +370,7 @@ use Term::ANSIScreen qw/:color :cursor :screen :constants/;
 
 my $JID = 0;
 
-sub new {
+sub job::new {
     my $proto = shift;
     my $class = ref($proto) || $proto;    # Get the class name
     my ($x, $y) = @_;
@@ -392,7 +393,7 @@ sub new {
 }
 
 # Draw it at the given position
-sub draw {
+sub job::draw {
     my $this = shift;
     my $row  = shift;
     my $col  = shift;
@@ -428,7 +429,7 @@ sub draw {
 }
 
 # Erase it from the screen
-sub erase {
+sub job::erase {
     my $this = shift;
     return unless defined $this->{row};
     print RESET, WHITE ON BLACK;
@@ -438,7 +439,7 @@ sub erase {
     return;
 }
 
-sub moveby {
+sub job::moveby {
     my $this = shift;
     my ($dx, $dy) = @_;
     $this->draw(1);    # clear
@@ -447,7 +448,7 @@ sub moveby {
     $this->draw();
 }
 
-sub tick {
+sub job::tick {
     my $this = shift;
     $this->moveby(1, 2) if !($T % 10);
 }
@@ -457,7 +458,7 @@ use strict;
 use utf8;
 use Term::ANSIScreen qw/:color :cursor :screen :constants/;
 
-sub new {
+sub tunnel::new {
     my $proto = shift;
     my $class = ref($proto) || $proto;    # Get the class name
     my ($x, $y) = @_;
@@ -476,7 +477,7 @@ sub new {
     return $this;
 }
 
-sub draw {
+sub tunnel::draw {
     my $this = shift;
     my $clear = shift || 0;
 
@@ -505,7 +506,7 @@ sub draw {
     print locate($this->{x} + 7, $this->{y}), sprintf("  %4d ‱", $this->{jfail});
 }
 
-sub tick() {
+sub tunnel::tick() {
     my $this = shift;
     $this->draw();
 }
