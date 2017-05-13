@@ -310,7 +310,10 @@ sub queue::tick {
         if (rand(10_000) < $tun->{jfail}) {
 
             # Job error: fail it or requeue it
-            $this->move_job($job, $this->{qrun}, $this->{qpend}, 1);
+            $this->move_job($job, 
+                    $this->{qrun}, 
+                    $job->{tries} >= $job->{maxtry} ?  $this->{qfail} : $this->{qpend}, 
+                    1);
             $runs_changed = 1;
             --$nrun;
         }
@@ -377,7 +380,7 @@ sub job::new {
         state    => state::JOB_PEND,
         substate => state::SUB_INIT,
         tries    => 0,
-        maxtry   => 10,
+        maxtry   => 5,
         row      => undef,
         col      => undef,
         size     => 1_000 + int(rand(512_000_000)),    # simulated job size, in bytes
@@ -438,6 +441,17 @@ sub job::erase {
     print locate($this->{row} + 1, $this->{col}), "   "
         if $this->{state} == state::JOB_RUN;
     return;
+}
+
+# Move between queues or within a queue
+sub job::move {
+    my $this  = shift;
+    my $newst = shift;  # New state, moves it between subqueues, or undef
+    my $newps = shift;  # New 1-based position, or undef, or 0 to yank from queue
+    my $atend = shift || 0;
+# XXX Working here
+
+    
 }
 
 sub job::moveby {
