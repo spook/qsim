@@ -174,6 +174,7 @@ sub queue::draw_runs {
 }
 
 # Move a job from one queue to another, putting at beginning or end of new queue
+# XXX change to be job::move($newq||undef, $atend//1)
 sub queue::move_job {
     my $this  = shift;
     my $job   = shift;
@@ -240,11 +241,23 @@ sub queue::qstate {
         :                           undef;
 }
 
+# Return subqueue ref from state
+sub queue::whichq {
+    my $this  = shift;
+    my $state = shift;
+    return $state == state::JOB_PEND ? $this->{qpend}
+         : $state == state::JOB_RUN  ? $this->{qrun}
+         : $state == state::JOB_DONE ? $this->{qdone}
+         : $state == state::JOB_FAIL ? $this->{qfail}
+         :                             undef;
+}
+
 sub queue::submit {
     my $this = shift;
     my $job  = shift;
     $job->{t0} = $T;    # When queued
     ++$this->{count};
+    $job->{queue} = $this;
     push @{$this->{qpend}}, $job;    # put it on the pending queue
 
     my $pos = @{$this->{qpend}};     # position is end of queue
@@ -296,7 +309,7 @@ sub queue::tick {
         # Per-job failure chance?
         if (rand(10_000) < $tun->{jfail}) {
 
-            # Job error, fail it or requeue it
+            # Job error: fail it or requeue it
             $this->move_job($job, $this->{qrun}, $this->{qpend}, 1);
             $runs_changed = 1;
             --$nrun;
@@ -325,7 +338,7 @@ sub queue::tick {
             next;
         }
 
-        # Substate is WRAP, Move job from Run to Done
+        # Substate is WRAP-up, Move job from Run to Done
         $this->move_job($job, $this->{qrun}, $this->{qdone}, 1);
         $runs_changed = 1;
         --$nrun;
@@ -337,28 +350,8 @@ sub queue::tick {
         && ($this->{qpend}->[0]->{trun} <= $T)
         )                                       # Time to run the job
     {
-        my $job = $this->{qpend}->[0];
+        my $job = $this->{qpend}->[0];          # Take first from pending queue
         $this->move_job($job, $this->{qpend}, $this->{qrun}, 1);
-
-#        # Erase from the screen, the last visible job in the pending queue, since they all bubble up
-#        my $lastvis = @{$this->{qpend}};
-#        $lastvis = $this->{maxpend} if $lastvis > $this->{maxpend};
-#        $this->{qpend}->[$lastvis - 1]->erase();
-#
-#        # Move ONE job to run
-#        my $job = shift @{$this->{qpend}};
-#        $job->{state}    = state::JOB_RUN;
-#        $job->{substate} = state::SUB_INIT;
-#        push @{$this->{qrun}}, $job;
-#        my $pos = @{$this->{qrun}};
-#        $job->draw($this->rc(state::JOB_RUN, $pos));
-#
-#        # Redraw pending
-#        for $pos (1 .. @{$this->{qpend}}) {
-#            last if $pos > $this->{maxpend};
-#            my $job = $this->{qpend}->[$pos - 1];
-#            $job->draw($this->rc(state::JOB_PEND, $pos));
-#        }
         $runs_changed = 1;
     }
 
@@ -377,17 +370,18 @@ sub job::new {
     my $class = ref($proto) || $proto;    # Get the class name
     my ($x, $y) = @_;
     my $this = {
-        t0       => 0,                                 # When queued
-        trun     => 0,                                 # earliest time I want to run
+        queue    => undef,
+        t0       => 0,                                 # Time when queued
+        trun     => 0,                                 # Earliest time I want to run
         jid      => ++$JID,
         state    => state::JOB_PEND,
         substate => state::SUB_INIT,
         tries    => 0,
-        maxtry   => 100,
+        maxtry   => 10,
         row      => undef,
         col      => undef,
-        size     => 1_000 + int(rand(512_000_000)),    # size in bytes
-        sofar    => 0,                                 # amoutn transferred so far in bytes
+        size     => 1_000 + int(rand(512_000_000)),    # simulated job size, in bytes
+        sofar    => 0,                                 # amount transferred so far, in bytes
     };
     bless $this, $class;
     $this->draw();
