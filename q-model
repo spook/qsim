@@ -1,0 +1,514 @@
+#!/usr/bin/perl -w
+use strict;
+use utf8;
+use Term::ANSIScreen qw/:color :cursor :screen :constants/;
+use Term::ReadKey;
+use Time::HiRes qw/usleep/;
+$| = 1;
+my $T = 0;     # Simulated time (seconds)
+my $X = 25;    # Speed factor
+
+# Set b/g
+binmode STDOUT, ":utf8";
+print cls, locate(24, 1), WHITE ON BLACK, clup;
+print "(Q)uit (F)aster (S)lower (P)ause/unpause";
+
+# Inits
+my $tun = tunnel->new(5, 29);
+my $que = queue->new($tun);
+for (1 .. 27) {
+    $que->submit(job->new);
+}
+
+# Run until nothing pending or running
+ReadMode 'raw';
+my $t_idle = 0;
+my $pause  = 0;
+while (1) {
+
+    # Check for keyboard keystroke
+    my $key = ReadKey(-1) || q{};
+    last     if $key eq "\x03";     # Ctrl-C = quit
+    last     if lc($key) eq 'q';    # Quit
+    $X++     if $key eq 'f';        # Faster
+    $X += 10 if $key eq 'F';        # Faster by 10
+    $X--     if $key eq 's';        # Slower
+    $X -= 10 if $key eq 'S';        # Slower by 10
+    $X = 1   if $X < 1;
+    $X = 250 if $X > 250;
+    $pause = !$pause if lc($key) eq 'p';    # Toggle pause
+
+    if ($pause) {
+        usleep 100_000;
+        next;
+    }
+
+    # Run another step
+    usleep int(1_000_000 / $X);
+    ++$T;
+    $que->tick();
+    $tun->tick();
+    status($que);
+
+    if (!@{$que->{qpend}} && !@{$que->{qrun}}) {
+        $t_idle++;
+        last if $t_idle > 60;    # Run idle for a minute
+    }
+    else {
+        $t_idle = 0;
+    }
+}
+
+# Reset & done
+print locate(24, 1), RESET;
+ReadMode 'normal';
+exit 0;
+
+sub status {
+    my $que = shift;
+    print locate(1, 1), BLACK ON WHITE, clline;
+
+    # Simulated time
+    my $t = $T;
+    my $d = int($t / (24 * 60 * 60));
+    $t -= $d * 24 * 60 * 60;
+    my $h = int($t / (60 * 60));
+    $t -= $h * 60 * 60;
+    my $m = int($t / 60);
+    my $s = $t - $m * 60;
+    print locate(1, 1), sprintf("%3.3d %2.2d:%2.2d:%2.2d %3dX", $d, $h, $m, $s, $X);
+
+    # Queue
+    my ($np, $nr, $rl, $nf, $nd, $tot) = $que->depths();
+    print locate(1, 20),
+        sprintf("Q:%dpend %d/%drun %dfail %ddone %dtot", $np, $nr, $rl, $nf, $nd, $tot);
+
+    # in case of interrupt, be at bottom
+    print locate(24, 1);
+}
+
+package state;
+
+use constant JOB_PEND => 1;    # Pending, new
+use constant JOB_RUN  => 2;    # Pending, requeued
+use constant JOB_FAIL => 3;    # Job died
+use constant JOB_DONE => 4;    # Job finished OK
+
+use constant SUB_INIT => 0;    # Initializing handshake
+use constant SUB_XFER => 1;    # transferring
+use constant SUB_WRAP => 2;    # wrapup phase
+
+use constant TUN_DN => 0;
+use constant TUN_UP => 1;
+
+package queue;
+use strict;
+use utf8;
+use Term::ANSIScreen qw/:color :cursor :screen :constants/;
+
+sub new {
+    my $proto  = shift;
+    my $class  = ref($proto) || $proto;    # Get the class name
+    my $tunnel = shift;
+    my $this   = {
+        tunnel  => $tunnel,
+        qpend   => [],
+        qrun    => [],
+        qfail   => [],
+        qdone   => [],
+        count   => 0,                      # total count of jobs we've ever processed
+        maxpend => 100,                    # max pending that we'll show - queue can grow larger tho
+        maxrun  => 5,                      # max jobs that can run at a time
+        maxfail => 40,                     # max failed jobs we keep around; we purge after this
+        maxdone => 100,                    # max done jobs we keep around; we purge after this
+    };
+    bless $this, $class;
+    $this->draw();
+    return $this;
+}
+
+sub depths {
+    my $this = shift;
+    return (
+        scalar(@{$this->{qpend}}), scalar(@{$this->{qrun}}),  $this->{maxrun},
+        scalar(@{$this->{qfail}}), scalar(@{$this->{qdone}}), $this->{count}
+    );
+}
+
+sub draw {
+    my $this = shift;
+
+    print WHITE ON BLACK;
+
+    print locate(5, 22), "╲", locate(6, 22), "╱";
+
+    print UNDERLINE;
+    print locate(3, 2),  "      Pending      ";
+    print locate(3, 24), "Run";
+    print locate(3, 40), "       Done        ";
+    print locate(3, 61), "       Fail        ";
+
+    $this->draw_runs();
+}
+
+sub draw_runs {
+    my $this = shift;
+
+    # Existing jobs
+    my $pos = 0;
+    foreach my $job (@{$this->{qrun}}) {
+        $job->draw($this->rc(state::JOB_RUN, ++$pos));
+    }
+
+    # Placeholder lines
+    print RESET, WHITE ON BLACK;
+    for my $r (@{$this->{qrun}} + 1 .. $this->{maxrun}) {
+        my ($row, $col) = $this->rc(state::JOB_RUN, $r);
+        print locate($row + 1, $col), "   ";
+    }
+    print GREEN, UNDERLINE;
+    for my $r (@{$this->{qrun}} + 1 .. $this->{maxrun}) {
+        print locate($this->rc(state::JOB_RUN, $r)), "   ";
+    }
+}
+
+sub move_job {
+    my $this  = shift;
+    my $job   = shift;
+    my $oldq  = shift;        # array ref
+    my $newq  = shift;        # array ref
+    my $atend = shift || 0;
+
+    # Find job in the old queue and pull it
+    my $idx   = 0;
+    my $last  = $#$oldq;
+    my $found = 0;
+    while ($idx <= $last) {
+        if ($found) {
+
+            # Bubble-up all jobs after it
+            my $bjob = $oldq->[$idx];
+            $bjob->erase();
+            $bjob->draw($this->rc($job->{state}, $idx));    # draw pos is 1-based, thus idx is - 1
+        }
+        elsif ($job == $oldq->[$idx]) {
+            splice @$oldq, $idx, 1;                         # Yank it
+            $job->erase();
+            $found = 1;
+            $last--;
+            next;
+        }
+        $idx++;
+    }
+    die "*** Job not found in oldq\n" unless $found;
+
+    # Add to new
+    my $pos = 1;                                            # 1-based
+    if ($atend) {
+        push @$newq, $job;
+        $pos = @$newq;
+    }
+    else {
+        unshift @$newq, $job;
+    }
+
+    # Update job attr's
+    $job->{state} = $this->qstate($newq);
+    if ($job->{state} == state::JOB_RUN) {
+        $job->{tries}++;
+        $job->{substate} = state::SUB_INIT;
+    }
+
+    # Redraw the moved job and everything it bumps
+    for my $bpos ($pos .. scalar(@$newq)) {
+        my $bjob = $newq->[$bpos - 1];
+        $bjob->draw($this->rc($bjob->{state}, $bpos));
+    }
+}
+
+sub qstate {
+    my $this = shift;
+    my $qref = shift;
+    return
+          $qref == $this->{qpend} ? state::JOB_PEND
+        : $qref == $this->{qrun}  ? state::JOB_RUN
+        : $qref == $this->{qdone} ? state::JOB_DONE
+        : $qref == $this->{qfail} ? state::JOB_FAIL
+        :                           undef;
+}
+
+sub submit {
+    my $this = shift;
+    my $job  = shift;
+    $job->{t0} = $T;    # When queued
+    ++$this->{count};
+    push @{$this->{qpend}}, $job;    # put it on the pending queue
+
+    my $pos = @{$this->{qpend}};     # position is end of queue
+    $job->draw($this->rc(state::JOB_PEND, $pos))
+        if $pos <= $this->{maxpend};
+}
+
+# return queue display position row & column
+sub rc {
+    my $this  = shift;
+    my $state = shift;
+    my $pos   = shift;               # starts at 1
+
+    if ($state == state::JOB_PEND) {
+        my $ht  = 20;
+        my $row = 4 + (($pos - 1) % $ht);
+        my $col = 18 - 4 * int(($pos - 1) / $ht);
+        return ($row, $col);
+    }
+    if ($state == state::JOB_RUN) {
+        my $row = 5 + ($pos - 1) * 3;
+        my $col = 24;
+        return ($row, $col);
+    }
+    if ($state == state::JOB_DONE) {
+        my $ht  = 20;
+        my $row = 4 + (($pos - 1) % $ht);
+        my $col = 40 + 4 * int(($pos - 1) / $ht);
+        return ($row, $col);
+    }
+    my $ht  = 20;
+    my $row = 4 + (($pos - 1) % $ht);
+    my $col = 61 + 4 * int(($pos - 1) / $ht);
+    return ($row, $col);
+}
+
+# Run the queue
+sub tick {
+    my $this         = shift;
+    my $runs_changed = 0;
+
+    # Advance running jobs
+    my $r    = 0;
+    my $tun  = $this->{tunnel};
+    my $nrun = @{$this->{qrun}};    # Number running jobs
+    while ($r < $nrun) {
+        my $job = $this->{qrun}->[$r];
+
+        # Per-job failure chance?
+        if (rand(10_000) < $tun->{jfail}) {
+
+            # Job error, fail it or requeue it
+            $this->move_job($job, $this->{qrun}, $this->{qpend}, 1);
+            $runs_changed = 1;
+            --$nrun;
+        }
+
+        # Transfer simulation
+        if ($job->{substate} == state::SUB_INIT) {
+
+            # skip one second for init phase, do nothing really
+            $job->{substate} = state::SUB_XFER;
+            ++$r;
+            next;
+        }
+        elsif ($job->{substate} == state::SUB_XFER) {
+
+            # Simulate transfer of one-second of data
+            $job->{sofar} += int(0.83 * $tun->{Bps} / $nrun);
+            $job->draw($this->rc(state::JOB_RUN, $r + 1));    # So percentage updates
+
+            # Is job done?
+            if ($job->{sofar} >= $job->{size}) {
+                $job->{sofar}    = $job->{size};
+                $job->{substate} = state::SUB_WRAP;
+            }
+            ++$r;
+            next;
+        }
+
+        # Substate is WRAP, Move job from Run to Done
+        $this->move_job($job, $this->{qrun}, $this->{qdone}, 1);
+        $runs_changed = 1;
+        --$nrun;
+    }
+
+    # Any open run slots, and anything wanting to run?
+    if ((@{$this->{qrun}} < $this->{maxrun})    # I have room
+        && @{$this->{qpend}}                    # There's pending jobs
+        && ($this->{qpend}->[0]->{trun} <= $T)
+        )                                       # Time to run the job
+    {
+        my $job = $this->{qpend}->[0];
+        $this->move_job($job, $this->{qpend}, $this->{qrun}, 1);
+
+#        # Erase from the screen, the last visible job in the pending queue, since they all bubble up
+#        my $lastvis = @{$this->{qpend}};
+#        $lastvis = $this->{maxpend} if $lastvis > $this->{maxpend};
+#        $this->{qpend}->[$lastvis - 1]->erase();
+#
+#        # Move ONE job to run
+#        my $job = shift @{$this->{qpend}};
+#        $job->{state}    = state::JOB_RUN;
+#        $job->{substate} = state::SUB_INIT;
+#        push @{$this->{qrun}}, $job;
+#        my $pos = @{$this->{qrun}};
+#        $job->draw($this->rc(state::JOB_RUN, $pos));
+#
+#        # Redraw pending
+#        for $pos (1 .. @{$this->{qpend}}) {
+#            last if $pos > $this->{maxpend};
+#            my $job = $this->{qpend}->[$pos - 1];
+#            $job->draw($this->rc(state::JOB_PEND, $pos));
+#        }
+        $runs_changed = 1;
+    }
+
+    $this->draw_runs() if $runs_changed;
+}
+
+package job;
+use strict;
+use utf8;
+use Term::ANSIScreen qw/:color :cursor :screen :constants/;
+
+my $JID = 0;
+
+sub new {
+    my $proto = shift;
+    my $class = ref($proto) || $proto;    # Get the class name
+    my ($x, $y) = @_;
+    my $this = {
+        t0       => 0,                                 # When queued
+        trun     => 0,                                 # earliest time I want to run
+        jid      => ++$JID,
+        state    => state::JOB_PEND,
+        substate => state::SUB_INIT,
+        tries    => 0,
+        maxtry   => 100,
+        row      => undef,
+        col      => undef,
+        size     => 1_000 + int(rand(512_000_000)),    # size in bytes
+        sofar    => 0,                                 # amoutn transferred so far in bytes
+    };
+    bless $this, $class;
+    $this->draw();
+    return $this;
+}
+
+# Draw it at the given position
+sub draw {
+    my $this = shift;
+    my $row  = shift;
+    my $col  = shift;
+
+    my $jid   = $this->{jid};
+    my $state = $this->{state};
+    my $tries = $this->{tries};
+
+    print CLEAR ON BLACK;
+    if (defined $this->{row}) {
+    }
+    print(
+          ($state == state::JOB_PEND) && ($tries <= 1) ? BLUE
+        : ($state == state::JOB_PEND) && ($tries < 10) ? BOLD BLUE
+        : ($state == state::JOB_PEND) ? BOLD BLUE ON YELLOW
+        : ($state == state::JOB_RUN)  ? GREEN
+        : ($state == state::JOB_DONE) ? WHITE
+        : ($state == state::JOB_FAIL) && ($tries <= 1) ? RED
+        : ($state == state::JOB_FAIL) ? BOLD RED
+        :                               YELLOW
+    );
+
+    if ($state == state::JOB_RUN) {
+        my $pct = $this->{size} ? int(100 * $this->{sofar} / $this->{size}) : 0;
+        $pct = 99 if $pct > 99;
+        print locate($row + 1, $col), sprintf("%2d%%", $pct);
+    }
+    print UNDERLINE;
+    print locate($row, $col), sprintf("%3d", $jid);
+
+    $this->{row} = $row;
+    $this->{col} = $col;
+}
+
+# Erase it from the screen
+sub erase {
+    my $this = shift;
+    return unless defined $this->{row};
+    print RESET, WHITE ON BLACK;
+    print locate($this->{row},     $this->{col}), "   ";
+    print locate($this->{row} + 1, $this->{col}), "   "
+        if $this->{state} == state::JOB_RUN;
+    return;
+}
+
+sub moveby {
+    my $this = shift;
+    my ($dx, $dy) = @_;
+    $this->draw(1);    # clear
+    $this->{row} += $dx;
+    $this->{col} += $dy;
+    $this->draw();
+}
+
+sub tick {
+    my $this = shift;
+    $this->moveby(1, 2) if !($T % 10);
+}
+
+package tunnel;
+use strict;
+use utf8;
+use Term::ANSIScreen qw/:color :cursor :screen :constants/;
+
+sub new {
+    my $proto = shift;
+    my $class = ref($proto) || $proto;    # Get the class name
+    my ($x, $y) = @_;
+    my $this = {
+        x => $x || 1,
+        y => $y || 1,    # = = =
+        Bps   => 2_500_000,
+        mtbf  => 1_000_000,
+        jfail => 28,              # job failure rate per chunk per 10,000.
+        state => state::TUN_UP,
+        tup   => 0,               # time tunnel last came up
+        count => 0,               # bytes sent over tunel since tup
+    };
+    bless $this, $class;
+    $this->draw();
+    return $this;
+}
+
+sub draw {
+    my $this = shift;
+    my $clear = shift || 0;
+
+    print CLEAR WHITE ON BLACK;
+    if ($clear) {
+        print locate($this->{x} + 0, $this->{y}), "         ";
+        print locate($this->{x} + 1, $this->{y}), "         ";
+        return;
+    }
+    my $top = $this->{state} ? "───────┘╲" : "·······┘╲";
+    my $bot = $this->{state} ? "───────┐╱" : "·······┐╱";
+    my $tic = $T % 8;
+    if ($this->{state} && $tic) {
+        substr($top, $tic - 1) = "┬";
+        substr($bot, $tic - 1) = "┴";
+    }
+    print $this->{state} ? WHITE : RED;
+    print locate($this->{x} + 0, $this->{y}), $top;
+    print locate($this->{x} + 1, $this->{y}), $bot;
+    print YELLOW;
+    print locate($this->{x} + 2, $this->{y}), "B/W Bps=";
+    print locate($this->{x} + 3, $this->{y}), sprintf("%10d", $this->{Bps});
+    print locate($this->{x} + 4, $this->{y}), "Tun MTBF=";
+    print locate($this->{x} + 5, $this->{y}), sprintf("%10d", $this->{mtbf});
+    print locate($this->{x} + 6, $this->{y}), "Job Fail=";
+    print locate($this->{x} + 7, $this->{y}), sprintf("  %4d ‱", $this->{jfail});
+}
+
+sub tick() {
+    my $this = shift;
+    $this->draw();
+}
+
+1;
+
