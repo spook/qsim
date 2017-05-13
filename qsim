@@ -10,7 +10,7 @@ use Term::ReadKey;
 use Time::HiRes qw/usleep/;
 $| = 1;
 my $T = 0;     # Simulated time (seconds)
-my $X = 25;    # Speed factor
+my $X = 30;    # Speed factor
 
 # Set b/g
 binmode STDOUT, ":utf8";
@@ -85,7 +85,7 @@ sub status {
     # Queue
     my ($np, $nr, $maxr, $nf, $nd, $tot) = $que->depths();
     print locate(1, 20),
-        sprintf("Q:%dpend %d/%drun %dfail %ddone %dtot", $np, $nr, $maxr, $nf, $nd, $tot);
+        sprintf("%d pend, %d/%d run, %d fail, %d done, %d total", $np, $nr, $maxr, $nf, $nd, $tot);
 }
 
 package state;
@@ -140,7 +140,6 @@ sub queue::draw {
     my $this = shift;
 
     print WHITE ON BLACK;
-
     print locate(5, 22), "╲", locate(6, 22), "╱";
 
     print UNDERLINE;
@@ -148,100 +147,77 @@ sub queue::draw {
     print locate(3, 24), "Run";
     print locate(3, 40), "       Done        ";
     print locate(3, 61), "       Fail        ";
-
-    $this->draw_runs();
 }
 
-sub queue::draw_runs {
+# Insert a job into the queue
+#  for head posn=0; for tail posn=-1, sorted posn=undef which is default
+sub queue::insert {
     my $this = shift;
+    my $job  = shift;
+    my $posn = shift;   # 0-based
 
-    # Existing jobs
-    my $pos = 0;
-    foreach my $job (@{$this->{qrun}}) {
-        $job->draw($this->rc(state::JOB_RUN, ++$pos));
-    }
+    my $subq = $this->whichq($job->{state});
+    die "*** Stateless job $job->{jid}\n" if !$subq;
+    $posn = where($subq, $job) if !defined $posn;
+    $posn += @$subq + 1        if $posn < 0;
 
-    # Placeholder lines
-    print RESET, WHITE ON BLACK;
-    for my $r (@{$this->{qrun}} + 1 .. $this->{maxrun}) {
-        my ($row, $col) = $this->rc(state::JOB_RUN, $r);
-        print locate($row + 1, $col), "   ";
-    }
-    print GREEN, UNDERLINE;
-    for my $r (@{$this->{qrun}} + 1 .. $this->{maxrun}) {
-        print locate($this->rc(state::JOB_RUN, $r)), "   ";
+    splice @$subq, $posn, 0, $job;  # Splice it in
+    for my $i ($posn .. $#$subq) {
+        $subq->[$i]->{posn} = $i;
+        $subq->[$i]->draw();
     }
 }
 
-# Move a job from one queue to another, putting at beginning or end of new queue
-# XXX change to be job::move($newq||undef, $atend//1)
-sub queue::move_job {
+#job = queue::remove($job)
+sub queue::remove {
     my $this  = shift;
     my $job   = shift;
-    my $oldq  = shift;        # array ref
-    my $newq  = shift;        # array ref
-    my $atend = shift || 0;
+    my $state = $job->{state};
+    my $posn  = $job->{posn};   # 0-based
+    return $job if !defined $posn;
 
-    # Find job in the old queue and pull it
-    my $idx   = 0;
-    my $last  = $#$oldq;
-    my $found = 0;
-    while ($idx <= $last) {
-        if ($found) {
-
-            # Bubble-up all jobs after it
-            my $bjob = $oldq->[$idx];
-            $bjob->erase();
-            $bjob->draw($this->rc($job->{state}, $idx+1));
-# XXX WORKING HERE
-        }
-        elsif ($job == $oldq->[$idx]) {
-            splice @$oldq, $idx, 1;                         # Yank it out of old queue
-            $job->erase();
-            $found = 1;
-            $last--;
-            next;
-        }
-        $idx++;
+    my $subq  = $this->whichq($state);
+    $subq->[$#$subq]->erase();          # Erase from the display, whatever is at the end
+    splice @$subq, $posn, 1;            # Yank the job out of the subqueue
+    for my $i ($posn .. $#$subq) {      # Bubble-up the remaining jobs
+        $subq->[$i]->{posn} = $i;       # Adjust position inside job
+        $subq->[$i]->draw();            # Redraw in new position
     }
-    die "*** Job not found in oldq\n" unless $found;
+    $job->{posn}  = undef;
+    $job->{queue} = undef;
+    return $job;
+}
 
-    # Add to new
-    my $pos = 1;    # 1-based
-    if ($atend) {
-        push @$newq, $job;
-        $pos = @$newq;
+# Return index (0-based) where the job belongs in sorted subqueue
+# This is not a member function, just call it plainly
+sub where {
+    my $subq = shift;
+    my $job  = shift;
+    for my $i (0..$#$subq) {
+        return $i if  $job->{trun} <  $subq->[$i]->{trun};
+        return $i if ($job->{trun} == $subq->[$i]->{trun})
+                  && ($job->{jid}  <  $subq->[$i]->{jid})
     }
-    else {
-        unshift @$newq, $job;
-    }
+    return scalar(@$subq);  # Goes to the end
+}
 
-    # Update job attr's
-    $job->{state} = $this->qstate($newq);
-    if ($job->{state} == state::JOB_RUN) {
+# Move a job into a new state
+sub queue::move_job {
+    my $this  = shift;
+    my $job   = shift;                  # Job to move
+    my $state = shift;                  # New state for the job
+    return if $job->{state} == $state;  # no-op
+
+    $this->remove($job);
+    $job->{state} = $state;
+    if ($state == state::JOB_RUN) {
         $job->{tries}++;
         $job->{substate} = state::SUB_INIT;
     }
-
-    # Redraw the moved job and everything it bumps   XXX needed still here?
-    for my $bpos ($pos .. scalar(@$newq)) {
-        my $bjob = $newq->[$bpos - 1];
-        $bjob->draw($this->rc($bjob->{state}, $bpos));
-    }
+    $this->insert($job);
 }
 
-sub queue::qstate {
-    my $this = shift;
-    my $qref = shift;
-    return
-          $qref == $this->{qpend} ? state::JOB_PEND
-        : $qref == $this->{qrun}  ? state::JOB_RUN
-        : $qref == $this->{qdone} ? state::JOB_DONE
-        : $qref == $this->{qfail} ? state::JOB_FAIL
-        :                           undef;
-}
-
-# Return subqueue ref from state
+# Return subqueue where this job should be
 sub queue::whichq {
     my $this  = shift;
     my $state = shift;
@@ -249,49 +225,16 @@ sub queue::whichq {
          : $state == state::JOB_RUN  ? $this->{qrun}
          : $state == state::JOB_DONE ? $this->{qdone}
          : $state == state::JOB_FAIL ? $this->{qfail}
-         :                             undef;
+         :                                    undef;
 }
 
 sub queue::submit {
     my $this = shift;
     my $job  = shift;
     $job->{t0} = $T;    # When queued
+    $job->{state} = state::JOB_PEND;
     ++$this->{count};
-    $job->{queue} = $this;
-    push @{$this->{qpend}}, $job;    # put it on the pending queue
-
-    my $pos = @{$this->{qpend}};     # position is end of queue
-    $job->draw($this->rc(state::JOB_PEND, $pos))
-        if $pos <= $this->{maxpend};
-}
-
-# return queue display position row & column
-sub queue::rc {
-    my $this  = shift;
-    my $state = shift;
-    my $pos   = shift;  # starts at 1
-
-    if ($state == state::JOB_PEND) {
-        my $ht  = 20;
-        my $row = 4 + (($pos - 1) % $ht);
-        my $col = 18 - 4 * int(($pos - 1) / $ht);
-        return ($row, $col);
-    }
-    if ($state == state::JOB_RUN) {
-        my $row = 5 + ($pos - 1) * 3;
-        my $col = 24;
-        return ($row, $col);
-    }
-    if ($state == state::JOB_DONE) {
-        my $ht  = 20;
-        my $row = 4 + (($pos - 1) % $ht);
-        my $col = 40 + 4 * int(($pos - 1) / $ht);
-        return ($row, $col);
-    }
-    my $ht  = 20;
-    my $row = 4 + (($pos - 1) % $ht);
-    my $col = 61 + 4 * int(($pos - 1) / $ht);
-    return ($row, $col);
+    $this->insert($job);
 }
 
 # Run the queue
@@ -311,11 +254,9 @@ sub queue::tick {
 
             # Job error: fail it or requeue it
             $this->move_job($job, 
-                    $this->{qrun}, 
-                    $job->{tries} >= $job->{maxtry} ?  $this->{qfail} : $this->{qpend}, 
-                    1);
-            $runs_changed = 1;
+                    $job->{tries} >= $job->{maxtry} ? state::JOB_FAIL : state::JOB_PEND); 
             --$nrun;
+            next;
         }
 
         # Transfer simulation
@@ -330,7 +271,7 @@ sub queue::tick {
 
             # Simulate transfer of one-second of data
             $job->{sofar} += int(0.83 * $tun->{Bps} / $nrun);
-            $job->draw($this->rc(state::JOB_RUN, $r + 1));    # So percentage updates
+            $job->draw();    # So percentage updates
 
             # Is job done?
             if ($job->{sofar} >= $job->{size}) {
@@ -342,23 +283,19 @@ sub queue::tick {
         }
 
         # Substate is WRAP-up, Move job from Run to Done
-        $this->move_job($job, $this->{qrun}, $this->{qdone}, 1);
-        $runs_changed = 1;
+        $this->move_job($job, state::JOB_DONE);
         --$nrun;
     }
 
     # Any open run slots, and anything wanting to run?
     if ((@{$this->{qrun}} < $this->{maxrun})    # I have room
-        && @{$this->{qpend}}                    # There's pending jobs
-        && ($this->{qpend}->[0]->{trun} <= $T)
-        )                                       # Time to run the job
+        && @{$this->{qpend}}                    # and there's pending jobs
+        && ($this->{qpend}->[0]->{trun} <= $T)  # and it's time to run the job
+        )                                       
     {
         my $job = $this->{qpend}->[0];          # Take first from pending queue
-        $this->move_job($job, $this->{qpend}, $this->{qrun}, 1);
-        $runs_changed = 1;
+        $this->move_job($job, state::JOB_RUN);
     }
-
-    $this->draw_runs() if $runs_changed;
 }
 
 package job;
@@ -373,16 +310,17 @@ sub job::new {
     my $class = ref($proto) || $proto;    # Get the class name
     my ($x, $y) = @_;
     my $this = {
-        queue    => undef,
         t0       => 0,                                 # Time when queued
         trun     => 0,                                 # Earliest time I want to run
-        jid      => ++$JID,
-        state    => state::JOB_PEND,
-        substate => state::SUB_INIT,
-        tries    => 0,
-        maxtry   => 5,
-        row      => undef,
-        col      => undef,
+        queue    => undef,                             # Ref to the subqueue we're held in
+        jid      => ++$JID,                            # My job ID
+        state    => state::JOB_PEND,                   # Job state
+        substate => state::SUB_INIT,                   # Job substate (for run)
+        tries    => 0,                                 # Times I've tried to run
+        maxtry   => 5,                                 # Limit to run attempts
+        row      => undef,                             # Display row
+        col      => undef,                             # Display column
+        posn     => undef,                             # Position (0-based index) in sub-queue
         size     => 1_000 + int(rand(512_000_000)),    # simulated job size, in bytes
         sofar    => 0,                                 # amount transferred so far, in bytes
     };
@@ -391,20 +329,18 @@ sub job::new {
     return $this;
 }
 
-# Draw it at the given position
+# Draw the job onto the display.  Uses {state} and {posn} to find where
 sub job::draw {
     my $this = shift;
-    my $row  = shift;
-    my $col  = shift;
+    return if !defined $this->{posn};
+    # TODO: If beyond display limits, clear row/col and return here
+    my ($row, $col) = rowcol($this->{state}, $this->{posn});
 
     my $jid   = $this->{jid};
     my $state = $this->{state};
     my $tries = $this->{tries};
 
     print CLEAR ON BLACK;
-    if (defined $this->{row}) {
-        # Erase from where it was before
-    }
     print(
           ($state == state::JOB_PEND) && ($tries >= 4) ? REVERSE BOLD BLUE
         : ($state == state::JOB_PEND) && ($tries >= 3) ? REVERSE BLUE
@@ -428,6 +364,7 @@ sub job::draw {
     print UNDERLINE;
     print locate($row, $col), sprintf("%3d", $jid);
 
+    # Remember where we drew it to make erase() easy
     $this->{row} = $row;
     $this->{col} = $col;
 }
@@ -440,32 +377,45 @@ sub job::erase {
     print locate($this->{row},     $this->{col}), "   ";
     print locate($this->{row} + 1, $this->{col}), "   "
         if $this->{state} == state::JOB_RUN;
+    $this->{row} = undef;
+    $this->{col} = undef;
     return;
 }
 
-# Move between queues or within a queue
-sub job::move {
-    my $this  = shift;
-    my $newst = shift;  # New state, moves it between subqueues, or undef
-    my $newps = shift;  # New 1-based position, or undef, or 0 to yank from queue
-    my $atend = shift || 0;
-# XXX Working here
+# return the display row & column for a job, based on state and position in subqueue
+# This is not a class function, call it plainly
+sub rowcol {
+    my $state = shift;
+    my $pos   = shift;  # 0-based
 
-    
-}
+    if ($state == state::JOB_PEND) {
+        my $ht  = 20;
+        my $row = 4 + ($pos % $ht);
+        my $col = 18 - 4 * int($pos / $ht);
+        return ($row, $col);
+    }
+    if ($state == state::JOB_RUN) {
+        my $row = 5 + $pos * 3;
+        my $col = 24;
+        return ($row, $col);
+    }
+    if ($state == state::JOB_DONE) {
+        my $ht  = 20;
+        my $row = 4 + ($pos % $ht);
+        my $col = 40 + 4 * int($pos / $ht);
+        return ($row, $col);
+    }
 
-sub job::moveby {
-    my $this = shift;
-    my ($dx, $dy) = @_;
-    $this->draw(1);    # clear
-    $this->{row} += $dx;
-    $this->{col} += $dy;
-    $this->draw();
+    # FAIL state
+    my $ht  = 20;
+    my $row = 4 + ($pos % $ht);
+    my $col = 61 + 4 * int($pos / $ht);
+    return ($row, $col);
 }
 
 sub job::tick {
     my $this = shift;
-    $this->moveby(1, 2) if !($T % 10);
+    # Nothing to do (yet)...
 }
 
 package tunnel;
@@ -476,10 +426,9 @@ use Term::ANSIScreen qw/:color :cursor :screen :constants/;
 sub tunnel::new {
     my $proto = shift;
     my $class = ref($proto) || $proto;    # Get the class name
-    my ($x, $y) = @_;
     my $this = {
-        x => $x || 1,
-        y => $y || 1,    # = = =
+        row   => shift || 1,
+        col   => shift || 1,    # = = =
         Bps   => 2_500_000,
         mtbf  => 1_000_000,
         jfail => 28,              # job failure rate per chunk per 10,000.
@@ -498,8 +447,8 @@ sub tunnel::draw {
 
     print CLEAR WHITE ON BLACK;
     if ($clear) {
-        print locate($this->{x} + 0, $this->{y}), "         ";
-        print locate($this->{x} + 1, $this->{y}), "         ";
+        print locate($this->{row} + 0, $this->{col}), "         ";
+        print locate($this->{row} + 1, $this->{col}), "         ";
         return;
     }
     my $top = $this->{state} ? "───────┘╲" : "·······┘╲";
@@ -510,15 +459,15 @@ sub tunnel::draw {
         substr($bot, $tic - 1) = "┴";
     }
     print $this->{state} ? WHITE : RED;
-    print locate($this->{x} + 0, $this->{y}), $top;
-    print locate($this->{x} + 1, $this->{y}), $bot;
+    print locate($this->{row} + 0, $this->{col}), $top;
+    print locate($this->{row} + 1, $this->{col}), $bot;
     print YELLOW;
-    print locate($this->{x} + 2, $this->{y}), "B/W Bps=";
-    print locate($this->{x} + 3, $this->{y}), sprintf("%10d", $this->{Bps});
-    print locate($this->{x} + 4, $this->{y}), "Tun MTBF=";
-    print locate($this->{x} + 5, $this->{y}), sprintf("%10d", $this->{mtbf});
-    print locate($this->{x} + 6, $this->{y}), "Job Fail=";
-    print locate($this->{x} + 7, $this->{y}), sprintf("  %4d ‱", $this->{jfail});
+    print locate($this->{row} + 2, $this->{col}), "B/W Bps=";
+    print locate($this->{row} + 3, $this->{col}), sprintf("%10d", $this->{Bps});
+    print locate($this->{row} + 4, $this->{col}), "Tun MTBF=";
+    print locate($this->{row} + 5, $this->{col}), sprintf("%10d", $this->{mtbf});
+    print locate($this->{row} + 6, $this->{col}), "Job Fail=";
+    print locate($this->{row} + 7, $this->{col}), sprintf("  %4d ‱", $this->{jfail});
 }
 
 sub tunnel::tick() {
