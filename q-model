@@ -173,6 +173,7 @@ sub queue::draw_runs {
     }
 }
 
+# Move a job from old queue to new queue, putting at beginning or end of new queue
 sub queue::move_job {
     my $this  = shift;
     my $job   = shift;
@@ -190,10 +191,11 @@ sub queue::move_job {
             # Bubble-up all jobs after it
             my $bjob = $oldq->[$idx];
             $bjob->erase();
-            $bjob->draw($this->rc($job->{state}, $idx));    # draw pos is 1-based, thus idx is - 1
+            $bjob->draw($this->rc($job->{state}, $idx+1));    # draw pos is 1-based, thus idx is -1
+# XXX WORKING HERE
         }
         elsif ($job == $oldq->[$idx]) {
-            splice @$oldq, $idx, 1;                         # Yank it
+            splice @$oldq, $idx, 1;                         # Yank it out of old queue
             $job->erase();
             $found = 1;
             $last--;
@@ -254,7 +256,7 @@ sub queue::submit {
 sub queue::rc {
     my $this  = shift;
     my $state = shift;
-    my $pos   = shift;               # starts at 1
+    my $pos   = shift;  # starts at 1
 
     if ($state == state::JOB_PEND) {
         my $ht  = 20;
