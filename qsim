@@ -20,8 +20,9 @@ print "(Q)uit (F)aster (S)lower (P)ause/unpause", clline;
 # Inits
 my $tun = tunnel->new(5, 29);
 my $que = queue->new($tun);
-for (1 .. 27) {
-    $que->submit(job->new);
+for (1 .. 35) {
+    my $job = job->new;
+    $que->submit($job);
 }
 
 # Run until nothing in pending or running stated
@@ -88,6 +89,7 @@ sub status {
         sprintf("%d pend, %d/%d run, %d fail, %d done, %d total", $np, $nr, $maxr, $nf, $nd, $tot);
 }
 
+
 package state;
 
 use constant JOB_PEND => 1;    # Pending, new
@@ -101,6 +103,7 @@ use constant SUB_WRAP => 2;    # wrapup phase
 
 use constant TUN_DN => 0;
 use constant TUN_UP => 1;
+
 
 package queue;
 use strict;
@@ -188,19 +191,6 @@ sub queue::remove {
     return $job;
 }
 
-# Return index (0-based) where the job belongs in sorted subqueue
-# This is not a member function, just call it plainly
-sub where {
-    my $subq = shift;
-    my $job  = shift;
-    for my $i (0..$#$subq) {
-        return $i if  $job->{trun} <  $subq->[$i]->{trun};
-        return $i if ($job->{trun} == $subq->[$i]->{trun})
-                  && ($job->{jid}  <  $subq->[$i]->{jid})
-    }
-    return scalar(@$subq);  # Goes to the end
-}
-
 # Move a job into a new state
 sub queue::move_job {
     my $this  = shift;
@@ -215,17 +205,6 @@ sub queue::move_job {
         $job->{substate} = state::SUB_INIT;
     }
     $this->insert($job);
-}
-
-# Return subqueue where this job should be
-sub queue::whichq {
-    my $this  = shift;
-    my $state = shift;
-    return $state == state::JOB_PEND ? $this->{qpend}
-         : $state == state::JOB_RUN  ? $this->{qrun}
-         : $state == state::JOB_DONE ? $this->{qdone}
-         : $state == state::JOB_FAIL ? $this->{qfail}
-         :                                    undef;
 }
 
 sub queue::submit {
@@ -252,9 +231,14 @@ sub queue::tick {
         # Per-job failure chance?
         if (rand(10_000) < $tun->{jfail}) {
 
-            # Job error: fail it or requeue it
-            $this->move_job($job, 
-                    $job->{tries} >= $job->{maxtry} ? state::JOB_FAIL : state::JOB_PEND); 
+            # A job error happened: fail it or requeue it
+            if ($job->{tries} >= $job->{maxtry}) {
+                $this->move_job($job, state::JOB_FAIL);
+            }
+            else {
+                $job->{trun} = $T + 60*$job->{tries};
+                $this->move_job($job, state::JOB_PEND);
+            }
             --$nrun;
             next;
         }
@@ -298,6 +282,31 @@ sub queue::tick {
     }
 }
 
+# Return index (0-based) where the job belongs in sorted subqueue
+# This is not a member function, just call it plainly
+sub where {
+    my $subq = shift;
+    my $job  = shift;
+    for my $i (0..$#$subq) {
+        return $i if  $job->{trun} <  $subq->[$i]->{trun};
+        return $i if ($job->{trun} == $subq->[$i]->{trun})
+                  && ($job->{jid}  <  $subq->[$i]->{jid})
+    }
+    return scalar(@$subq);  # Goes to the end
+}
+
+# Return subqueue where this job should be
+sub queue::whichq {
+    my $this  = shift;
+    my $state = shift;
+    return $state == state::JOB_PEND ? $this->{qpend}
+         : $state == state::JOB_RUN  ? $this->{qrun}
+         : $state == state::JOB_DONE ? $this->{qdone}
+         : $state == state::JOB_FAIL ? $this->{qfail}
+         :                                    undef;
+}
+
+
 package job;
 use strict;
 use utf8;
@@ -340,30 +349,43 @@ sub job::draw {
     my $state = $this->{state};
     my $tries = $this->{tries};
 
-    print CLEAR ON BLACK;
-    print(
-          ($state == state::JOB_PEND) && ($tries >= 4) ? REVERSE BOLD BLUE
-        : ($state == state::JOB_PEND) && ($tries >= 3) ? REVERSE BLUE
-        : ($state == state::JOB_PEND) && ($tries >= 2) ? BOLD BLUE
-        : ($state == state::JOB_PEND)                  ? BLUE
-        : ($state == state::JOB_RUN)                   ? GREEN
-        : ($state == state::JOB_DONE) && ($tries >= 5) ? REVERSE BOLD WHITE
-        : ($state == state::JOB_DONE) && ($tries >= 4) ? REVERSE WHITE
-        : ($state == state::JOB_DONE) && ($tries >= 3) ? BOLD WHITE
-        : ($state == state::JOB_DONE)                  ? WHITE
-        : ($state == state::JOB_FAIL) && ($tries >= 2) ? BOLD RED
-        : ($state == state::JOB_FAIL)                  ? RED
-        :                                                YELLOW
-    );
+    my $color = CLEAR ON BLACK;
+    $color .= ($state == state::JOB_PEND) ? BLUE
+            : ($state == state::JOB_RUN)  ? GREEN
+            : ($state == state::JOB_DONE) ? WHITE
+            : ($state == state::JOB_FAIL) ? RED
+            :                               YELLOW;
+    print $color;
 
+    # If RUN state, show percentage of done
     if ($state == state::JOB_RUN) {
         my $pct = $this->{size} ? int(100 * $this->{sofar} / $this->{size}) : 0;
         $pct = 99 if $pct > 99;
         print locate($row + 1, $col), sprintf("%2d%%", $pct);
     }
-    print UNDERLINE;
-    print locate($row, $col), sprintf("%3d", $jid);
 
+    # We'll use underlines, bold, and reverse to indicate try count
+    # These encode 5 bits for 0-31 tries; above that there's no differentiation
+    $color .= REVERSE if  $this->{tries} >= 16;
+    $color .= BOLD    if ($this->{tries} >= 32) || ($this->{tries} &  8);
+    my $u2 = ($this->{tries} >= 32) || ($this->{tries} & 4);
+    my $u1 = ($this->{tries} >= 32) || ($this->{tries} & 2);
+    my $u0 = ($this->{tries} >= 32) || ($this->{tries} & 1);
+    my $jstr = sprintf("%3.3d", $jid);
+    my $j2 = substr($jstr, -3, 1);
+    my $j1 = substr($jstr, -2, 1);
+    my $j0 = substr($jstr, -1, 1);
+    print locate($row, $col);
+    print $color;
+    print UNDERLINE if $u2;      # underline on
+    print $j2;
+    print $color if $u2 && !$u1; # underline off
+    print UNDERLINE if $u1;      # underline on
+    print $j1;
+    print $color if $u1 && !$u0; # turn off underline
+    print UNDERLINE if $u0;      # underline off
+    print $j0;
+    
     # Remember where we drew it to make erase() easy
     $this->{row} = $row;
     $this->{col} = $col;
