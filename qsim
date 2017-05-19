@@ -18,7 +18,7 @@ my $N_JOB = 0;
 # Set b/g
 binmode STDOUT, ":utf8";
 print cls, locate(24, 1), WHITE ON BLACK, clup;
-print "(Q)uit (F)aster (S)lower (P)ause/unpause (j)ob small create (J)ob large", clline;
+print "(Q)uit (F)aster (S)lower (P)ause/unpause (c)lear", clline;
 
 # Inits
 my $tun = tunnel->new(5, 29);
@@ -44,8 +44,9 @@ while (1) {
     $JOB_PRIO = 1 if $key eq 'h';
     $JOB_PRIO = 2 if $key eq 'm';
     $JOB_PRIO = 3 if $key eq 'l';
-    add_job($que) if $key eq 'j';        # add a single job
-    add_job($que,1) if $key eq 'J';        # add a single big job
+    add_job($que) if $key eq 'j';   # add a single job
+    add_job($que,1) if $key eq 'J'; # add a single big job
+    clear_que($que) if $key eq 'c'; # flush the q
     $X = 1   if $X < 1;
     $X = 250 if $X > 250;
     if (($key ge '0') && ($key le '9')) {
@@ -72,6 +73,19 @@ while (1) {
 print locate(24, 1), RESET, clline;
 ReadMode 'normal';
 exit 0;
+    
+sub clear_que {
+    my $que = shift;
+    my @jobs = (@{$que->{qpend}}, @{$que->{qrun}}, @{$que->{qfail}}, @{$que->{qdone}});
+    foreach (@jobs) { 
+        $_->erase() if $_;
+    }
+    $que->{qpend} = [];
+    $que->{qrun}  = [];
+    $que->{qfail} = [];
+    $que->{qdone} = [];
+    $que->{count} = 0;
+}
 
 sub add_job {
     my $que = shift;
