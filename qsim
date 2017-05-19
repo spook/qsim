@@ -8,14 +8,17 @@ use utf8;
 use Term::ANSIScreen qw/:color :cursor :screen :constants/;
 use Term::ReadKey;
 use Time::HiRes qw/usleep/;
+
 $| = 1;
 my $T = 0;     # Simulated time (seconds)
 my $X = 30;    # Speed factor
+my $JOB_PRIO = 2;
+my $N_JOB = 0;
 
 # Set b/g
 binmode STDOUT, ":utf8";
 print cls, locate(24, 1), WHITE ON BLACK, clup;
-print "(Q)uit (F)aster (S)lower (P)ause/unpause", clline;
+print "(Q)uit (F)aster (S)lower (P)ause/unpause (j)ob small create (J)ob large", clline;
 
 # Inits
 my $tun = tunnel->new(5, 29);
@@ -27,20 +30,28 @@ for (1 .. 35) {
 
 # Run until nothing in pending or running stated
 ReadMode 'raw';
-my $t_idle = 0;
 my $pause  = 0;
 while (1) {
 
     # Check for keyboard keystroke
-    my $key = ReadKey(-1) || q{};
+    my $key = ReadKey(-1) // q{};
     last     if $key eq "\x03";     # Ctrl-C = quit
     last     if lc($key) eq 'q';    # Quit
     $X++     if $key eq 'f';        # Faster
     $X += 10 if $key eq 'F';        # Faster by 10
     $X--     if $key eq 's';        # Slower
     $X -= 10 if $key eq 'S';        # Slower by 10
+    $JOB_PRIO = 1 if $key eq 'h';
+    $JOB_PRIO = 2 if $key eq 'm';
+    $JOB_PRIO = 3 if $key eq 'l';
+    add_job($que) if $key eq 'j';        # add a single job
+    add_job($que,1) if $key eq 'J';        # add a single big job
     $X = 1   if $X < 1;
     $X = 250 if $X > 250;
+    if (($key ge '0') && ($key le '9')) {
+        my $val = $key - '0';
+        $N_JOB = $N_JOB * 10 + $val;
+    }
 
     $pause = !$pause if lc($key) eq 'p';    # Toggle pause
     if ($pause) {
@@ -55,19 +66,24 @@ while (1) {
     $tun->tick();
     status($que);
 
-    if (!@{$que->{qpend}} && !@{$que->{qrun}}) {
-        $t_idle++;
-        last if $t_idle > 60;    # Run idle for a minute before quitting
-    }
-    else {
-        $t_idle = 0;
-    }
 }
 
 # Reset & done
 print locate(24, 1), RESET, clline;
 ReadMode 'normal';
 exit 0;
+
+sub add_job {
+    my $que = shift;
+    my $big = shift;
+    for (1..($N_JOB || 1)) {
+        my $job = job->new;
+        $job->{size} = $big ? 512_000_000 : 100_000;
+        $job->{prio} = $JOB_PRIO;
+        $que->submit($job);
+    }
+    $N_JOB = 0;
+}
 
 sub status {
     my $que = shift;
@@ -87,6 +103,8 @@ sub status {
     my ($np, $nr, $maxr, $nf, $nd, $tot) = $que->depths();
     print locate(1, 20),
         sprintf("%d pend, %d/%d run, %d fail, %d done, %d total", $np, $nr, $maxr, $nf, $nd, $tot);
+    print (locate(1, 67),
+        sprintf("n=%d", $N_JOB)) if $N_JOB;
 }
 
 
@@ -332,6 +350,7 @@ sub job::new {
         posn     => undef,                             # Position (0-based index) in sub-queue
         size     => 1_000 + int(rand(512_000_000)),    # simulated job size, in bytes
         sofar    => 0,                                 # amount transferred so far, in bytes
+        prio     => 1 + int(rand(3)),
     };
     bless $this, $class;
     $this->draw();
@@ -348,13 +367,13 @@ sub job::draw {
     my $jid   = $this->{jid};
     my $state = $this->{state};
     my $tries = $this->{tries};
+    my $prio = $this->{prio};
 
     my $color = CLEAR ON BLACK;
-    $color .= ($state == state::JOB_PEND) ? BLUE
-            : ($state == state::JOB_RUN)  ? GREEN
-            : ($state == state::JOB_DONE) ? WHITE
-            : ($state == state::JOB_FAIL) ? RED
-            :                               YELLOW;
+    $color .= ($prio == 1) ? RED
+            : ($prio == 2) ? GREEN
+            : ($prio == 3) ? WHITE
+            :                YELLOW;
     print $color;
 
     # If RUN state, show percentage of done
@@ -367,7 +386,7 @@ sub job::draw {
     # We'll use underlines, bold, and reverse to indicate try count
     # These encode 5 bits for 0-31 tries; above that there's no differentiation
     $color .= REVERSE if  $this->{tries} >= 16;
-    $color .= BOLD    if ($this->{tries} >= 32) || ($this->{tries} &  8);
+    $color .= BOLD    if $this->{size} > 100_000_000;
     my $u2 = ($this->{tries} >= 32) || ($this->{tries} & 4);
     my $u1 = ($this->{tries} >= 32) || ($this->{tries} & 2);
     my $u0 = ($this->{tries} >= 32) || ($this->{tries} & 1);
