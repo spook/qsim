@@ -11,11 +11,11 @@ use Term::ReadKey;
 use Time::HiRes qw/usleep/;
 
 $| = 1;
-my $T = 0;     # Simulated time (seconds)
-my $X = 30;    # Speed factor
-my $JOB_PRIO     = 0;   # Job priority for added (j/J)obs
-my $JOB_PRIO_DEF = 2;   # Default job priority
-my $N_JOB = 0;
+my $T            = 0;     # Simulated time (seconds)
+my $X            = 30;    # Speed factor
+my $JOB_PRIO     = 0;     # Job priority for added (j/J)obs
+my $JOB_PRIO_DEF = 2;     # Default job priority
+my $N_JOB        = 0;     # Number of jobs to add for j/J
 
 # Set b/g
 binmode STDOUT, ":utf8";
@@ -32,37 +32,39 @@ for (1 .. 35) {
 
 # Run until nothing in pending or running stated
 ReadMode 'raw';
-my $pause  = 0;
+my $pause = 0;
 while (1) {
 
     # Check for keyboard keystroke
-    my $key = ReadKey(-1) // q{};   # Grab a keystroke, if any.  (For pluma: /)
-    last     if $key eq "\x03";     # Ctrl-C = quit
-    last     if lc($key) eq 'q';    # Quit
-    $X++     if $key eq 'f';        # Faster
-    $X += 10 if $key eq 'F';        # Faster by 10
-    $X--     if $key eq 's';        # Slower
-    $X -= 10 if $key eq 'S';        # Slower by 10
+    my $key = ReadKey(-1) // q{};       # Grab a keystroke, if any. (/)
+    last     if $key eq "\x03";         # Ctrl-C = quit
+    last     if lc($key) eq 'q';        # Quit
+    $X++     if $key eq 'f';            # Faster
+    $X += 10 if $key eq 'F';            # Faster by 10
+    $X--     if $key eq 's';            # Slower
+    $X -= 10 if $key eq 'S';            # Slower by 10
     minmax($X, 1, 250);
-    $JOB_PRIO = 1 if $key eq 'h';
-    $JOB_PRIO = 2 if $key eq 'm';
-    $JOB_PRIO = 3 if $key eq 'l';
-    add_job($que) if $key eq 'j';   # add a single job
-    add_job($que,1) if $key eq 'J'; # add a single big job
-    clear_que($que) if $key eq 'c'; # flush the q
+    $JOB_PRIO = 1    if $key eq 'h';    # Jobs to add will be high priority
+    $JOB_PRIO = 2    if $key eq 'm';    # Jobs to add will be medium priority
+    $JOB_PRIO = 3    if $key eq 'l';    # Jobs to add will be low priority
+    add_job($que)    if $key eq 'j';    # add small jobs
+    add_job($que, 1) if $key eq 'J';    # add big jobs
+    clear_que($que)  if $key eq 'c';    # flush the q
 
+    # Process digits for job count
     if (($key ge '0') && ($key le '9')) {
         my $val = $key - '0';
         $N_JOB = $N_JOB * 10 + $val;
         minmax($N_JOB, 1, 100);
     }
-    if (($key eq "\x{7f}") && $N_JOB) {
+    if (($key eq "\x{7f}") && $N_JOB) { # 7f is backspace key
         $N_JOB = $N_JOB == 1 ? 0
-               : $N_JOB < 10 ? 1 
-               :               int($N_JOB/10);
+               : $N_JOB < 10 ? 1
+               :               int($N_JOB / 10);
     }
 
-    $pause = !$pause if lc($key) eq 'p';    # Toggle pause
+    # Pause toggle
+    $pause = !$pause if lc($key) eq 'p';
     if ($pause) {
         usleep 100_000;
         status($que);
@@ -82,11 +84,11 @@ while (1) {
 print locate(24, 1), RESET, clline;
 ReadMode 'normal';
 exit 0;
-    
+
 sub clear_que {
     my $que = shift;
     my @jobs = (@{$que->{qpend}}, @{$que->{qrun}}, @{$que->{qfail}}, @{$que->{qdone}});
-    foreach (@jobs) { 
+    foreach (@jobs) {
         $_->erase() if $_;
     }
     $que->{qpend} = [];
@@ -99,14 +101,14 @@ sub clear_que {
 sub add_job {
     my $que = shift;
     my $big = shift;
-    for (1..($N_JOB || 1)) {
+    for (1 .. ($N_JOB || 1)) {
         my $job = job->new;
         $job->{size} = $big ? 512_000_000 : 100_000;
         $job->{prio} = $JOB_PRIO || $JOB_PRIO_DEF;
         $que->submit($job);
     }
     $JOB_PRIO = 0;
-    $N_JOB = 0;
+    $N_JOB    = 0;
 }
 
 # This sets bounds on the given scalar; IT DIRECTLY MODIFIES THE GIVEN VALUE on purpose.
@@ -135,13 +137,10 @@ sub status {
     my ($np, $nr, $maxr, $nf, $nd, $tot) = $que->depths();
     print locate(1, 20),
         sprintf("%d pend, %d/%d run, %d fail, %d done, %d total", $np, $nr, $maxr, $nf, $nd, $tot);
-    print (locate(1, 67),
-        sprintf("n=%d", $N_JOB)) if $N_JOB;
-    print (locate(1, 72),
-           $JOB_PRIO == 1 ? "hi" : $JOB_PRIO == 2 ? "md": "lo")
+    print(locate(1, 67), sprintf("n=%d", $N_JOB)) if $N_JOB;
+    print(locate(1, 72), $JOB_PRIO == 1 ? "hi" : $JOB_PRIO == 2 ? "md" : "lo")
         if $JOB_PRIO;
 }
-
 
 package state;
 
@@ -156,7 +155,6 @@ use constant SUB_WRAP => 2;    # wrapup phase
 
 use constant TUN_DN => 0;
 use constant TUN_UP => 1;
-
 
 package queue;
 use strict;
@@ -210,14 +208,14 @@ sub queue::draw {
 sub queue::insert {
     my $this = shift;
     my $job  = shift;
-    my $posn = shift;   # 0-based
+    my $posn = shift;    # 0-based
 
     my $subq = $this->whichq($job->{state});
     die "*** Stateless job $job->{jid}\n" if !$subq;
     $posn = where($subq, $job) if !defined $posn;
-    $posn += @$subq + 1        if $posn < 0;
+    $posn += @$subq + 1 if $posn < 0;
 
-    splice @$subq, $posn, 0, $job;  # Splice it in
+    splice @$subq, $posn, 0, $job;    # Splice it in
     for my $i ($posn .. $#$subq) {
         $subq->[$i]->{posn} = $i;
         $subq->[$i]->draw();
@@ -229,15 +227,15 @@ sub queue::remove {
     my $this  = shift;
     my $job   = shift;
     my $state = $job->{state};
-    my $posn  = $job->{posn};   # 0-based
+    my $posn  = $job->{posn};         # 0-based
     return $job if !defined $posn;
 
-    my $subq  = $this->whichq($state);
-    $subq->[$#$subq]->erase();          # Erase from the display, whatever is at the end
-    splice @$subq, $posn, 1;            # Yank the job out of the subqueue
-    for my $i ($posn .. $#$subq) {      # Bubble-up the remaining jobs
-        $subq->[$i]->{posn} = $i;       # Adjust position inside job
-        $subq->[$i]->draw();            # Redraw in new position
+    my $subq = $this->whichq($state);
+    $subq->[$#$subq]->erase();        # Erase from the display, whatever is at the end
+    splice @$subq, $posn, 1;          # Yank the job out of the subqueue
+    for my $i ($posn .. $#$subq) {    # Bubble-up the remaining jobs
+        $subq->[$i]->{posn} = $i;     # Adjust position inside job
+        $subq->[$i]->draw();          # Redraw in new position
     }
     $job->{posn}  = undef;
     $job->{queue} = undef;
@@ -247,9 +245,9 @@ sub queue::remove {
 # Move a job into a new state
 sub queue::move_job {
     my $this  = shift;
-    my $job   = shift;                  # Job to move
-    my $state = shift;                  # New state for the job
-    return if $job->{state} == $state;  # no-op
+    my $job   = shift;                # Job to move
+    my $state = shift;                # New state for the job
+    return if $job->{state} == $state;    # no-op
 
     $this->remove($job);
     $job->{state} = $state;
@@ -263,7 +261,7 @@ sub queue::move_job {
 sub queue::submit {
     my $this = shift;
     my $job  = shift;
-    $job->{t0} = $T;    # When queued
+    $job->{t0}    = $T;                # When queued
     $job->{state} = state::JOB_PEND;
     ++$this->{count};
     $this->insert($job);
@@ -289,7 +287,7 @@ sub queue::tick {
                 $this->move_job($job, state::JOB_FAIL);
             }
             else {
-                $job->{trun} = $T + 60*$job->{tries};
+                $job->{trun} = $T + 60 * $job->{tries};
                 $this->move_job($job, state::JOB_PEND);
             }
             --$nrun;
@@ -328,7 +326,7 @@ sub queue::tick {
     if ((@{$this->{qrun}} < $this->{maxrun})    # I have room
         && @{$this->{qpend}}                    # and there's pending jobs
         && ($this->{qpend}->[0]->{trun} <= $T)  # and it's time to run the job
-        )                                       
+        )
     {
         my $job = $this->{qpend}->[0];          # Take first from pending queue
         $this->move_job($job, state::JOB_RUN);
@@ -340,25 +338,28 @@ sub queue::tick {
 sub where {
     my $subq = shift;
     my $job  = shift;
-    for my $i (0..$#$subq) {
-        return $i if  $job->{trun} <  $subq->[$i]->{trun};
-        return $i if ($job->{trun} == $subq->[$i]->{trun})
-                  && ($job->{jid}  <  $subq->[$i]->{jid})
+    for my $i (0 .. $#$subq) {
+        return $i if $job->{trun} < $subq->[$i]->{trun};
+        return $i
+            if ($job->{trun} == $subq->[$i]->{trun})
+            && (
+            $job->{jid} < $subq->[$i]->{jid}
+            );
     }
-    return scalar(@$subq);  # Goes to the end
+    return scalar(@$subq);    # Goes to the end
 }
 
 # Return subqueue where this job should be
 sub queue::whichq {
     my $this  = shift;
     my $state = shift;
-    return $state == state::JOB_PEND ? $this->{qpend}
-         : $state == state::JOB_RUN  ? $this->{qrun}
-         : $state == state::JOB_DONE ? $this->{qdone}
-         : $state == state::JOB_FAIL ? $this->{qfail}
-         :                                    undef;
+    return
+          $state == state::JOB_PEND ? $this->{qpend}
+        : $state == state::JOB_RUN  ? $this->{qrun}
+        : $state == state::JOB_DONE ? $this->{qdone}
+        : $state == state::JOB_FAIL ? $this->{qfail}
+        :                             undef;
 }
-
 
 package job;
 use strict;
@@ -396,19 +397,21 @@ sub job::new {
 sub job::draw {
     my $this = shift;
     return if !defined $this->{posn};
+
     # TODO: If beyond display limits, clear row/col and return here
     my ($row, $col) = rowcol($this->{state}, $this->{posn});
 
     my $jid   = $this->{jid};
     my $state = $this->{state};
     my $tries = $this->{tries};
-    my $prio = $this->{prio};
+    my $prio  = $this->{prio};
 
     my $color = CLEAR ON BLACK;
-    $color .= ($prio == 1) ? RED
-            : ($prio == 2) ? GREEN
-            : ($prio == 3) ? WHITE
-            :                YELLOW;
+    $color .=
+          ($prio == 1) ? RED
+        : ($prio == 2) ? GREEN
+        : ($prio == 3) ? WHITE
+        :                YELLOW;
     print $color;
 
     # If RUN state, show percentage of done
@@ -420,8 +423,8 @@ sub job::draw {
 
     # We'll use underlines, bold, and reverse to indicate try count
     # These encode 5 bits for 0-31 tries; above that there's no differentiation
-    $color .= REVERSE if  $this->{tries} >= 16;
-    $color .= BOLD    if $this->{size} > 100_000_000;
+    $color .= REVERSE if $this->{tries} >= 16;
+    $color .= BOLD if $this->{size} > 100_000_000;
     my $u2 = ($this->{tries} >= 32) || ($this->{tries} & 4);
     my $u1 = ($this->{tries} >= 32) || ($this->{tries} & 2);
     my $u0 = ($this->{tries} >= 32) || ($this->{tries} & 1);
@@ -431,15 +434,15 @@ sub job::draw {
     my $j0 = substr($jstr, -1, 1);
     print locate($row, $col);
     print $color;
-    print UNDERLINE if $u2;      # underline on
+    print UNDERLINE if $u2;    # underline on
     print $j2;
-    print $color if $u2 && !$u1; # underline off
-    print UNDERLINE if $u1;      # underline on
+    print $color if $u2 && !$u1;    # underline off
+    print UNDERLINE if $u1;         # underline on
     print $j1;
-    print $color if $u1 && !$u0; # turn off underline
-    print UNDERLINE if $u0;      # underline off
+    print $color if $u1 && !$u0;    # turn off underline
+    print UNDERLINE if $u0;         # underline off
     print $j0;
-    
+
     # Remember where we drew it to make erase() easy
     $this->{row} = $row;
     $this->{col} = $col;
@@ -462,7 +465,7 @@ sub job::erase {
 # This is not a class function, call it plainly
 sub rowcol {
     my $state = shift;
-    my $pos   = shift;  # 0-based
+    my $pos   = shift;    # 0-based
 
     if ($state == state::JOB_PEND) {
         my $ht  = 20;
@@ -491,6 +494,7 @@ sub rowcol {
 
 sub job::tick {
     my $this = shift;
+
     # Nothing to do (yet)...
 }
 
@@ -502,15 +506,15 @@ use Term::ANSIScreen qw/:color :cursor :screen :constants/;
 sub tunnel::new {
     my $proto = shift;
     my $class = ref($proto) || $proto;    # Get the class name
-    my $this = {
-        row   => shift || 1,
-        col   => shift || 1,    # = = =
-        Bps   => 2_500_000,
+    my $this  = {
+        row => shift || 1,
+        col => shift || 1,                # = = =
+        Bps => 2_500_000,
         mtbf  => 1_000_000,
-        jfail => 28,              # job failure rate per chunk per 10,000.
+        jfail => 28,                      # job failure rate per chunk per 10,000.
         state => state::TUN_UP,
-        tup   => 0,               # time tunnel last came up
-        count => 0,               # bytes sent over tunel since tup
+        tup   => 0,                       # time tunnel last came up
+        count => 0,                       # bytes sent over tunel since tup
     };
     bless $this, $class;
     $this->draw();
