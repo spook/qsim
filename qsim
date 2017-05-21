@@ -11,16 +11,17 @@ use Term::ReadKey;
 use Time::HiRes qw/usleep/;
 
 $| = 1;
-my $T            = 0;     # Simulated time (seconds)
-my $X            = 30;    # Speed factor
-my $JOB_PRIO     = 0;     # Job priority for added (j/J)obs
-my $JOB_PRIO_DEF = 2;     # Default job priority
-my $N_JOB        = 0;     # Number of jobs to add for j/J
+my $T            = 0;       # Simulated time (seconds)
+my $X            = 30;      # Speed factor
+my $JOB_PRIO     = 0;       # Job priority for added (j/J)obs
+my $JOB_PRIO_DEF = 2;       # Default job priority
+my $N_JOB        = 0;       # Number of jobs to add for j/J
+my $QALG         = \&alg0;  # Sorting algorithm under test
 
 # Set b/g
 binmode STDOUT, ":utf8";
 print cls, locate(24, 1), WHITE ON BLACK, clup;
-print "(Q)uit (F)aster (S)lower (P)ause/unpause (c)lear  Add nn[HML](j/J)obs", clline;
+print "(Q)uit (F)aster (S)lower (P)ause .=Step (c)lear (a)lg#  Add nn[HML](j/J)obs", clline;
 
 # Inits
 my $tun = tunnel->new(5, 29);
@@ -63,9 +64,20 @@ while (1) {
                :               int($N_JOB / 10);
     }
 
+    # Job-selection algorithm to use - rotate thru them
+    if ($key eq 'a') {
+        $QALG = ($QALG == \&alg0) ? \&alg1
+              : ($QALG == \&alg1) ? \&alg2
+              : ($QALG == \&alg2) ? \&alg3
+#              : ($QALG == \&alg3) ? \&alg4
+              :                     \&alg0
+              ;
+    }
+
     # Pause toggle
     $pause = !$pause if lc($key) eq 'p';
-    if ($pause) {
+    $pause = 1 if $key eq '.';  # Set pause for next pass
+    if ($pause && ($key ne '.')) {  # .=step one time thru
         usleep 100_000;
         status($que);
         next;
@@ -84,6 +96,39 @@ while (1) {
 print locate(24, 1), RESET, clline;
 ReadMode 'normal';
 exit 0;
+
+# Sorting algorithm zero - no sorting at all
+sub alg0 {
+    return 0 if !@_;    # Return algorithm number if no args given
+    return 0;
+}
+
+# Sorting algorithm one - priority only
+sub alg1 {
+    return 1 if !@_;    # Return algorithm number if no args given
+    my ($a, $b) = @_;
+    return $b->{prio} <=> $a->{prio};   # Note b<=>a since 1 is better than 3
+}
+
+# Sorting algorithm two - priority else jid, no regard for trun
+sub alg2 {
+    return 2 if !@_;    # Return algorithm number if no args given
+    my ($a, $b) = @_;
+    return ($b->{prio} <=> $a->{prio})
+        || ($a->{jid}  <=> $b->{jid})
+        ;
+}
+
+# Sorting algorithm three - priority else trun else jid
+sub alg3 {
+    return 3 if !@_;    # Return algorithm number if no args given
+    my ($a, $b) = @_;
+    return ($b->{prio} <=> $a->{prio})
+        || ($a->{trun} <=> $b->{trun})
+        || ($a->{jid}  <=> $b->{jid})
+        ;
+}
+
 
 sub clear_que {
     my $que = shift;
@@ -138,8 +183,11 @@ sub status {
     print locate(1, 20),
         sprintf("%d pend, %d/%d run, %d fail, %d done, %d total", $np, $nr, $maxr, $nf, $nd, $tot);
     print(locate(1, 67), sprintf("n=%d", $N_JOB)) if $N_JOB;
-    print(locate(1, 72), $JOB_PRIO == 1 ? "hi" : $JOB_PRIO == 2 ? "md" : "lo")
+    print(locate(1,75), "Alg=", &$QALG());
+    print(locate(1, 72), 
+            $JOB_PRIO == 1 ? RED "hi" : $JOB_PRIO == 2 ? GREEN "md" : BLACK "lo")
         if $JOB_PRIO;
+
 }
 
 package state;
@@ -323,12 +371,14 @@ sub queue::tick {
     }
 
     # Any open run slots, and anything wanting to run?
-    if ((@{$this->{qrun}} < $this->{maxrun})    # I have room
-        && @{$this->{qpend}}                    # and there's pending jobs
-        && ($this->{qpend}->[0]->{trun} <= $T)  # and it's time to run the job
-        )
-    {
-        my $job = $this->{qpend}->[0];          # Take first from pending queue
+    while (@{$this->{qrun}} < $this->{maxrun}) {    # I have room
+        # Take first highest priority job from queue
+        my @sorted = 
+            sort {&$QALG($a, $b)}               # Selected sorting algorithm
+            grep {$_->{trun} <= $T}             # Must be job's time to run
+                @{$this->{qpend}};
+        last unless @sorted;                    # Exit if nothing eligible
+        my $job = $sorted[0];                   # Take top sorted job
         $this->move_job($job, state::JOB_RUN);
     }
 }
