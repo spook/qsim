@@ -16,7 +16,7 @@ my $X            = 30;      # Speed factor
 my $JOB_PRIO     = 0;       # Job priority for added (j/J)obs
 my $JOB_PRIO_DEF = 2;       # Default job priority
 my $N_JOB        = 0;       # Number of jobs to add for j/J
-my $QALG         = \&alg0;  # Sorting algorithm under test
+my $QALG         = \&alg1;  # Sorting algorithm under test
 
 # Set b/g
 binmode STDOUT, ":utf8";
@@ -107,14 +107,14 @@ sub alg0 {
 sub alg1 {
     return 1 if !@_;    # Return algorithm number if no args given
     my ($a, $b) = @_;
-    return $b->{prio} <=> $a->{prio};   # Note b<=>a since 1 is better than 3
+    return $a->{prio} <=> $b->{prio};
 }
 
 # Sorting algorithm two - priority else jid, no regard for trun
 sub alg2 {
     return 2 if !@_;    # Return algorithm number if no args given
     my ($a, $b) = @_;
-    return ($b->{prio} <=> $a->{prio})
+    return ($a->{prio} <=> $b->{prio})
         || ($a->{jid}  <=> $b->{jid})
         ;
 }
@@ -123,7 +123,7 @@ sub alg2 {
 sub alg3 {
     return 3 if !@_;    # Return algorithm number if no args given
     my ($a, $b) = @_;
-    return ($b->{prio} <=> $a->{prio})
+    return ($a->{prio} <=> $b->{prio})
         || ($a->{trun} <=> $b->{trun})
         || ($a->{jid}  <=> $b->{jid})
         ;
@@ -148,7 +148,7 @@ sub add_job {
     my $big = shift;
     for (1 .. ($N_JOB || 1)) {
         my $job = job->new;
-        $job->{size} = $big ? 512_000_000 : 100_000;
+        $job->{size} = $big ? 512_000_000 : 750_000;
         $job->{prio} = $JOB_PRIO || $JOB_PRIO_DEF;
         $que->submit($job);
     }
@@ -295,6 +295,7 @@ sub queue::move_job {
     my $this  = shift;
     my $job   = shift;                # Job to move
     my $state = shift;                # New state for the job
+    my $posn  = shift;                # 0-based, head posn=0; for tail posn=-1, sorted posn=undef
     return if $job->{state} == $state;    # no-op
 
     $this->remove($job);
@@ -303,7 +304,7 @@ sub queue::move_job {
         $job->{tries}++;
         $job->{substate} = state::SUB_INIT;
     }
-    $this->insert($job);
+    $this->insert($job, $posn);
 }
 
 sub queue::submit {
@@ -332,6 +333,7 @@ sub queue::tick {
 
             # A job error happened: fail it or requeue it
             if ($job->{tries} >= $job->{maxtry}) {
+                $job->{trun} = $T;
                 $this->move_job($job, state::JOB_FAIL);
             }
             else {
@@ -366,11 +368,13 @@ sub queue::tick {
         }
 
         # Substate is WRAP-up, Move job from Run to Done
+        $job->{trun} = $T;
         $this->move_job($job, state::JOB_DONE);
         --$nrun;
     }
 
     # Any open run slots, and anything wanting to run?
+    my $ONE_PER = 1;                            # 0 to fill all free slots in one go
     while (@{$this->{qrun}} < $this->{maxrun}) {    # I have room
         # Take first highest priority job from queue
         my @sorted = 
@@ -379,7 +383,8 @@ sub queue::tick {
                 @{$this->{qpend}};
         last unless @sorted;                    # Exit if nothing eligible
         my $job = $sorted[0];                   # Take top sorted job
-        $this->move_job($job, state::JOB_RUN);
+        $this->move_job($job, state::JOB_RUN, -1);
+        last if $ONE_PER;
     }
 }
 
@@ -436,7 +441,7 @@ sub job::new {
         posn     => undef,                             # Position (0-based index) in sub-queue
         size     => 1_000 + int(rand(512_000_000)),    # simulated job size, in bytes
         sofar    => 0,                                 # amount transferred so far, in bytes
-        prio     => 1 + int(rand(3)),
+        prio     => $JOB_PRIO_DEF,                     # Job priority, 1=best
     };
     bless $this, $class;
     $this->draw();
