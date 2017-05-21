@@ -141,6 +141,7 @@ sub clear_que {
     $que->{qfail} = [];
     $que->{qdone} = [];
     $que->{count} = 0;
+    job::clear_jid();
 }
 
 sub add_job {
@@ -446,6 +447,10 @@ sub job::new {
     bless $this, $class;
     $this->draw();
     return $this;
+}
+
+sub job::clear_jid {
+    $JID = 0;
 }
 
 # Draw the job onto the display.  Uses {state} and {posn} to find where
