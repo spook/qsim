@@ -13,13 +13,14 @@ use Time::HiRes qw/usleep/;
 $| = 1;
 my $T = 0;     # Simulated time (seconds)
 my $X = 30;    # Speed factor
-my $JOB_PRIO = 2;
+my $JOB_PRIO     = 0;   # Job priority for added (j/J)obs
+my $JOB_PRIO_DEF = 2;   # Default job priority
 my $N_JOB = 0;
 
 # Set b/g
 binmode STDOUT, ":utf8";
 print cls, locate(24, 1), WHITE ON BLACK, clup;
-print "(Q)uit (F)aster (S)lower (P)ause/unpause (c)lear", clline;
+print "(Q)uit (F)aster (S)lower (P)ause/unpause (c)lear  Add nn[HML](j/J)obs", clline;
 
 # Inits
 my $tun = tunnel->new(5, 29);
@@ -42,17 +43,23 @@ while (1) {
     $X += 10 if $key eq 'F';        # Faster by 10
     $X--     if $key eq 's';        # Slower
     $X -= 10 if $key eq 'S';        # Slower by 10
+    minmax($X, 1, 250);
     $JOB_PRIO = 1 if $key eq 'h';
     $JOB_PRIO = 2 if $key eq 'm';
     $JOB_PRIO = 3 if $key eq 'l';
     add_job($que) if $key eq 'j';   # add a single job
     add_job($que,1) if $key eq 'J'; # add a single big job
     clear_que($que) if $key eq 'c'; # flush the q
-    $X = 1   if $X < 1;
-    $X = 250 if $X > 250;
+
     if (($key ge '0') && ($key le '9')) {
         my $val = $key - '0';
         $N_JOB = $N_JOB * 10 + $val;
+        minmax($N_JOB, 1, 100);
+    }
+    if (($key eq "\x{7f}") && $N_JOB) {
+        $N_JOB = $N_JOB == 1 ? 0
+               : $N_JOB < 10 ? 1 
+               :               int($N_JOB/10);
     }
 
     $pause = !$pause if lc($key) eq 'p';    # Toggle pause
@@ -95,10 +102,19 @@ sub add_job {
     for (1..($N_JOB || 1)) {
         my $job = job->new;
         $job->{size} = $big ? 512_000_000 : 100_000;
-        $job->{prio} = $JOB_PRIO;
+        $job->{prio} = $JOB_PRIO || $JOB_PRIO_DEF;
         $que->submit($job);
     }
+    $JOB_PRIO = 0;
     $N_JOB = 0;
+}
+
+# This sets bounds on the given scalar; IT DIRECTLY MODIFIES THE GIVEN VALUE on purpose.
+# Call like:   minmax($percent, 0, 100)
+sub minmax {
+    return $_[0] = $_[1] if defined $_[1] && $_[0] < $_[1];
+    return $_[0] = $_[2] if defined $_[2] && $_[0] > $_[2];
+    return $_[0];
 }
 
 sub status {
@@ -121,6 +137,9 @@ sub status {
         sprintf("%d pend, %d/%d run, %d fail, %d done, %d total", $np, $nr, $maxr, $nf, $nd, $tot);
     print (locate(1, 67),
         sprintf("n=%d", $N_JOB)) if $N_JOB;
+    print (locate(1, 72),
+           $JOB_PRIO == 1 ? "hi" : $JOB_PRIO == 2 ? "md": "lo")
+        if $JOB_PRIO;
 }
 
 
