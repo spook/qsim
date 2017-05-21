@@ -3,6 +3,7 @@
 #   such as queue::new { ... } instead of just sub new { ... } .
 #   Perl doesn't require this, but I find it keeps it easier to follow
 #   since there's several packages (scopes) in this one file.
+use v5.10.0;
 use strict;
 use utf8;
 use Term::ANSIScreen qw/:color :cursor :screen :constants/;
@@ -34,7 +35,7 @@ my $pause  = 0;
 while (1) {
 
     # Check for keyboard keystroke
-    my $key = ReadKey(-1) // q{};
+    my $key = ReadKey(-1) // q{};   # Grab a keystroke, if any.  (For pluma: /)
     last     if $key eq "\x03";     # Ctrl-C = quit
     last     if lc($key) eq 'q';    # Quit
     $X++     if $key eq 'f';        # Faster
@@ -57,6 +58,7 @@ while (1) {
     $pause = !$pause if lc($key) eq 'p';    # Toggle pause
     if ($pause) {
         usleep 100_000;
+        status($que);
         next;
     }
 
