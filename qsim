@@ -50,7 +50,7 @@ while (1) {
     $JOB_PRIO = 3    if $key eq 'l';    # Jobs to add will be low priority
     add_job($que)    if $key eq 'j';    # add small jobs
     add_job($que, 1) if $key eq 'J';    # add big jobs
-    clear_que($que)  if $key eq 'c';    # flush the q
+    $que->clear()    if $key eq 'c';    # flush the q
     $tun->flip()     if $key eq 't';    # toggle tunnel state
 
     # Process digits for job count
@@ -130,20 +130,6 @@ sub alg3 {
         ;
 }
 
-
-sub clear_que {
-    my $que = shift;
-    my @jobs = (@{$que->{qpend}}, @{$que->{qrun}}, @{$que->{qfail}}, @{$que->{qdone}});
-    foreach (@jobs) {
-        $_->erase() if $_;
-    }
-    $que->{qpend} = [];
-    $que->{qrun}  = [];
-    $que->{qfail} = [];
-    $que->{qdone} = [];
-    $que->{count} = 0;
-    job::clear_jid();
-}
 
 sub add_job {
     my $que = shift;
@@ -252,6 +238,21 @@ sub queue::draw {
     print locate(3, 24), "Run";
     print locate(3, 40), "           Done            ";
     print locate(3, 69), "   Fail    ";
+}
+
+sub queue::clear {
+    my $this = shift;
+    my @jobs = (@{$que->{qpend}}, @{$que->{qrun}}, @{$que->{qfail}}, @{$que->{qdone}});
+    foreach (@jobs) {
+        $_->erase() if $_;
+    }
+    $que->{qpend} = [];
+    $que->{qrun}  = [];
+    $que->{qfail} = [];
+    $que->{qdone} = [];
+    $que->{count} = 0;
+
+    job::clear_jid();
 }
 
 # Insert a job into the queue
