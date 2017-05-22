@@ -21,7 +21,7 @@ my $QALG         = \&alg1;  # Sorting algorithm under test
 # Set b/g
 binmode STDOUT, ":utf8";
 print cls, locate(24, 1), WHITE ON BLACK, clup;
-print "(Q)uit (F)aster (S)lower (P)ause .=Step (c)lear (a)lg#  Add nn[HML](j/J)obs", clline;
+print "(Q)uit (F)aster (S)lower (P)ause .=Step (c)lear (a)lg#  Add (j/J)obs", clline;
 
 # Inits
 my $tun = tunnel->new(5, 29);
@@ -56,7 +56,7 @@ while (1) {
     if (($key ge '0') && ($key le '9')) {
         my $val = $key - '0';
         $N_JOB = $N_JOB * 10 + $val;
-        minmax($N_JOB, 1, 100);
+        minmax($N_JOB, 1, 999);
     }
     if (($key eq "\x{7f}") && $N_JOB) { # 7f is backspace key
         $N_JOB = $N_JOB == 1 ? 0
@@ -224,7 +224,7 @@ sub queue::new {
         maxpend => 100,                    # max pending that we'll show - queue can grow larger tho
         maxrun  =>   5,                    # max jobs that can run at a time
         maxdone => 140,                    # max done jobs we keep around; we purge after this
-        maxfail =>  40,                    # max failed jobs we keep around; we purge after this
+        maxfail =>  60,                    # max failed jobs we keep around; we purge after this
     };
     bless $this, $class;
     $this->draw();
@@ -242,10 +242,11 @@ sub queue::depths {
 sub queue::draw {
     my $this = shift;
 
-    print WHITE ON BLACK;
-    print locate(5, 22), "╲", locate(6, 22), "╱";
+    print BLUE ON BLACK;
+    print locate(5, 22), "╲";
+    print locate(6, 22), "╱";
 
-    print UNDERLINE;
+    print WHITE, UNDERLINE;
     print locate(3, 2),  "      Pending      ";
     print locate(3, 24), "Run";
     print locate(3, 40), "           Done            ";
@@ -617,7 +618,7 @@ sub tunnel::draw {
         substr($top, $tic - 1) = "┬";
         substr($bot, $tic - 1) = "┴";
     }
-    print $this->{state} ? WHITE : RED;
+    print $this->{state} ? BLUE : RED;
     print locate($this->{row} + 0, $this->{col}), $top;
     print locate($this->{row} + 1, $this->{col}), $bot;
     print YELLOW;
