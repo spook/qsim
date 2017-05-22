@@ -149,7 +149,7 @@ sub add_job {
     my $big = shift;
     for (1 .. ($N_JOB || 1)) {
         my $job = job->new;
-        $job->{size} = $big ? 512_000_000 : 750_000;
+        $job->{size} = $big ? 512_000_000 : 400_000;
         $job->{prio} = $JOB_PRIO || $JOB_PRIO_DEF;
         $que->submit($job);
     }
@@ -222,9 +222,9 @@ sub queue::new {
         qdone   => [],
         count   => 0,                      # total count of jobs we've ever processed
         maxpend => 100,                    # max pending that we'll show - queue can grow larger tho
-        maxrun  => 5,                      # max jobs that can run at a time
-        maxfail => 40,                     # max failed jobs we keep around; we purge after this
-        maxdone => 100,                    # max done jobs we keep around; we purge after this
+        maxrun  =>   5,                    # max jobs that can run at a time
+        maxdone => 140,                    # max done jobs we keep around; we purge after this
+        maxfail =>  40,                    # max failed jobs we keep around; we purge after this
     };
     bless $this, $class;
     $this->draw();
@@ -248,8 +248,8 @@ sub queue::draw {
     print UNDERLINE;
     print locate(3, 2),  "      Pending      ";
     print locate(3, 24), "Run";
-    print locate(3, 40), "       Done        ";
-    print locate(3, 61), "       Fail        ";
+    print locate(3, 40), "           Done            ";
+    print locate(3, 69), "   Fail    ";
 }
 
 # Insert a job into the queue
@@ -259,8 +259,8 @@ sub queue::insert {
     my $job  = shift;
     my $posn = shift;    # 0-based
 
+    $job->{queue} = $this;
     my $subq = $this->whichq($job->{state});
-    die "*** Stateless job $job->{jid}\n" if !$subq;
     $posn = where($subq, $job) if !defined $posn;
     $posn += @$subq + 1 if $posn < 0;
 
@@ -269,6 +269,36 @@ sub queue::insert {
         $subq->[$i]->{posn} = $i;
         $subq->[$i]->draw();
     }
+
+    # Limit DONE and FAIL queues to only keep the M tail jobs
+    my $max = $job->{state} == state::JOB_DONE ? $this->{maxdone}
+            : $job->{state} == state::JOB_FAIL ? $this->{maxfail}
+            : 0 ;
+    if ($max && @$subq > $max) {
+        shift @$subq;
+        # Sadly, we have to redraw the whole lot, changing their {posn}
+        foreach my $j (@$subq) {
+            $j->{posn}--;
+            $j->draw;
+        }
+    }
+}
+
+# Move a job into a new state
+sub queue::move_job {
+    my $this  = shift;
+    my $job   = shift;                # Job to move
+    my $state = shift;                # New state for the job
+    my $posn  = shift;                # 0-based, head posn=0; for tail posn=-1, sorted posn=undef
+    return if $job->{state} == $state;    # no-op
+
+    $this->remove($job);
+    $job->{state} = $state;
+    if ($state == state::JOB_RUN) {
+        $job->{tries}++;
+        $job->{substate} = state::SUB_INIT;
+    }
+    $this->insert($job, $posn);
 }
 
 #job = queue::remove($job)
@@ -289,23 +319,6 @@ sub queue::remove {
     $job->{posn}  = undef;
     $job->{queue} = undef;
     return $job;
-}
-
-# Move a job into a new state
-sub queue::move_job {
-    my $this  = shift;
-    my $job   = shift;                # Job to move
-    my $state = shift;                # New state for the job
-    my $posn  = shift;                # 0-based, head posn=0; for tail posn=-1, sorted posn=undef
-    return if $job->{state} == $state;    # no-op
-
-    $this->remove($job);
-    $job->{state} = $state;
-    if ($state == state::JOB_RUN) {
-        $job->{tries}++;
-        $job->{substate} = state::SUB_INIT;
-    }
-    $this->insert($job, $posn);
 }
 
 sub queue::submit {
@@ -431,12 +444,12 @@ sub job::new {
     my $this = {
         t0       => 0,                                 # Time when queued
         trun     => 0,                                 # Earliest time I want to run
-        queue    => undef,                             # Ref to the subqueue we're held in
+        subq     => undef,                             # Ref to the subqueue we're held in
         jid      => ++$JID,                            # My job ID
         state    => state::JOB_PEND,                   # Job state
         substate => state::SUB_INIT,                   # Job substate (for run)
         tries    => 0,                                 # Times I've tried to run
-        maxtry   => 5,                                 # Limit to run attempts
+        maxtry   => 7,                                 # Limit to run attempts
         row      => undef,                             # Display row
         col      => undef,                             # Display column
         posn     => undef,                             # Position (0-based index) in sub-queue
@@ -458,7 +471,13 @@ sub job::draw {
     my $this = shift;
     return if !defined $this->{posn};
 
-    # TODO: If beyond display limits, clear row/col and return here
+    my $que = $this->{queue};
+    my $max = $this->{state} == state::JOB_PEND ? $que->{maxpend}
+            : $this->{state} == state::JOB_RUN  ? $que->{maxrun}
+            : $this->{state} == state::JOB_DONE ? $que->{maxdone}
+            : $this->{state} == state::JOB_FAIL ? $que->{maxfail}
+            : 0 ;
+    return if $this->{posn} >= $max;
     my ($row, $col) = rowcol($this->{state}, $this->{posn});
 
     my $jid   = $this->{jid};
@@ -548,7 +567,7 @@ sub rowcol {
     # FAIL state
     my $ht  = 20;
     my $row = 4 + ($pos % $ht);
-    my $col = 61 + 4 * int($pos / $ht);
+    my $col = 69 + 4 * int($pos / $ht);
     return ($row, $col);
 }
 
@@ -571,7 +590,7 @@ sub tunnel::new {
         col => shift || 1,                # = = =
         Bps => 2_500_000,
         mtbf  => 1_000_000,
-        jfail => 28,                      # job failure rate per chunk per 10,000.
+        jfail => 42,                      # job failure rate per chunk per 10,000.
         state => state::TUN_UP,
         tup   => 0,                       # time tunnel last came up
         count => 0,                       # bytes sent over tunel since tup
