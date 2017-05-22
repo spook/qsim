@@ -21,10 +21,10 @@ my $QALG         = \&alg1;  # Sorting algorithm under test
 # Set b/g
 binmode STDOUT, ":utf8";
 print cls, locate(24, 1), WHITE ON BLACK, clup;
-print "(Q)uit (F)aster (S)lower (P)ause .=Step (c)lear (a)lg#  Add (j/J)obs", clline;
+print "(Q)uit (F)aster (S)lower (P)ause .=Step (c)lear (a)lg#  (t)un   Add (j/J)obs", clline;
 
 # Inits
-my $tun = tunnel->new(5, 29);
+my $tun = tunnel->new;
 my $que = queue->new($tun);
 for (1 .. 35) {
     my $job = job->new;
@@ -51,6 +51,7 @@ while (1) {
     add_job($que)    if $key eq 'j';    # add small jobs
     add_job($que, 1) if $key eq 'J';    # add big jobs
     clear_que($que)  if $key eq 'c';    # flush the q
+    $tun->flip()     if $key eq 't';    # toggle tunnel state
 
     # Process digits for job count
     if (($key ge '0') && ($key le '9')) {
@@ -183,8 +184,8 @@ sub status {
     my ($np, $nr, $maxr, $nf, $nd, $tot) = $que->depths();
     print locate(1, 20),
         sprintf("%d pend, %d/%d run, %d fail, %d done, %d total", $np, $nr, $maxr, $nf, $nd, $tot);
-    print(locate(1, 67), sprintf("n=%d", $N_JOB)) if $N_JOB;
-    print(locate(1,75), "Alg=", &$QALG());
+    print(locate(1, 66), sprintf("n=%d", $N_JOB)) if $N_JOB;
+    print(locate(1, 75), "Alg=", &$QALG());
     print(locate(1, 72), 
             $JOB_PRIO == 1 ? RED "hi" : $JOB_PRIO == 2 ? GREEN "md" : BLACK "lo")
         if $JOB_PRIO;
@@ -333,8 +334,7 @@ sub queue::submit {
 
 # Run the queue
 sub queue::tick {
-    my $this         = shift;
-    my $runs_changed = 0;
+    my $this = shift;
 
     # Advance running jobs
     my $r    = 0;
@@ -343,8 +343,11 @@ sub queue::tick {
     while ($r < $nrun) {
         my $job = $this->{qrun}->[$r];
 
+        # Tunnel down?  Or...
         # Per-job failure chance?
-        if (rand(10_000) < $tun->{jfail}) {
+        # TODO: move this to job's tick(), where tick() returns the errno like in a real job
+        if (($this->{tunnel}->{state} != state::TUN_UP)
+         || (rand(10_000) < $tun->{jfail})) {
 
             # A job error happened: fail it or requeue it
             if ($job->{tries} >= $job->{maxtry}) {
@@ -587,8 +590,8 @@ sub tunnel::new {
     my $proto = shift;
     my $class = ref($proto) || $proto;    # Get the class name
     my $this  = {
-        row => shift || 1,
-        col => shift || 1,                # = = =
+        row => 5,
+        col => 29,
         Bps => 2_500_000,
         mtbf  => 1_000_000,
         jfail => 42,                      # job failure rate per chunk per 10,000.
@@ -602,7 +605,7 @@ sub tunnel::new {
 }
 
 sub tunnel::draw {
-    my $this = shift;
+    my $this  = shift;
     my $clear = shift || 0;
 
     print CLEAR WHITE ON BLACK;
@@ -628,6 +631,17 @@ sub tunnel::draw {
     print locate($this->{row} + 5, $this->{col}), sprintf("%10d", $this->{mtbf});
     print locate($this->{row} + 6, $this->{col}), "Job Fail=";
     print locate($this->{row} + 7, $this->{col}), sprintf("  %4d ‱", $this->{jfail});
+}
+
+sub tunnel::flip() {
+    my $tun = shift;
+    if ($tun->{state} == state::TUN_UP) {
+        $tun->{state} = state::TUN_DN;
+    }
+    else {
+        $tun->{state} = state::TUN_UP;
+    }
+    $tun->draw;
 }
 
 sub tunnel::tick() {
