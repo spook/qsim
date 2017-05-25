@@ -212,6 +212,7 @@ sub queue::new {
         maxrun  =>   5,                    # max jobs that can run at a time
         maxdone => 140,                    # max done jobs we keep around; we purge after this
         maxfail =>  60,                    # max failed jobs we keep around; we purge after this
+        polling =>  30,                    # check for free slots every n seconds/ticks
     };
     bless $this, $class;
     $this->draw();
@@ -337,75 +338,38 @@ sub queue::submit {
 # Run the queue
 sub queue::tick {
     my $this = shift;
+    my $tun  = $this->{tunnel};
 
     # Advance running jobs
     my $r    = 0;
-    my $tun  = $this->{tunnel};
     my $nrun = @{$this->{qrun}};    # Number running jobs
     while ($r < $nrun) {
         my $job = $this->{qrun}->[$r];
-
-        # Tunnel down?  Or...
-        # Per-job failure chance?
-        # TODO: move this to job's tick(), where tick() returns the errno like in a real job
-        if (($this->{tunnel}->{state} != state::TUN_UP)
-         || (rand(10_000) < $tun->{jfail})) {
-
-            # A job error happened: fail it or requeue it
-            if ($job->{tries} >= $job->{maxtry}) {
-                $job->{trun} = $T;
-                $this->move_job($job, state::JOB_FAIL);
-            }
-            else {
-                $job->{trun} = $T + 60 * $job->{tries};
-                $this->move_job($job, state::JOB_PEND);
-            }
+        my $new_state = $job->tick($tun, $nrun);
+        if ($new_state ne state::JOB_RUN) {
+            $this->move_job($job, $new_state);
             --$nrun;
-            next;
         }
-
-        # Transfer simulation
-        if ($job->{substate} == state::SUB_INIT) {
-
-            # skip one second for init phase, do nothing really
-            $job->{substate} = state::SUB_XFER;
+        else {
             ++$r;
-            next;
         }
-        elsif ($job->{substate} == state::SUB_XFER) {
-
-            # Simulate transfer of one-second of data
-            $job->{sofar} += int(0.83 * $tun->{Bps} / $nrun);
-            $job->draw();    # So percentage updates
-
-            # Is job done?
-            if ($job->{sofar} >= $job->{size}) {
-                $job->{sofar}    = $job->{size};
-                $job->{substate} = state::SUB_WRAP;
-            }
-            ++$r;
-            next;
-        }
-
-        # Substate is WRAP-up, Move job from Run to Done
-        $job->{trun} = $T;
-        $this->move_job($job, state::JOB_DONE);
-        --$nrun;
     }
 
-    # Any open run slots, and anything wanting to run?
-    my $ONE_PER = 1;                            # 0 to fill all free slots in one go
-    while (@{$this->{qrun}} < $this->{maxrun}) {    # I have room
-        # Take first highest priority job from queue
-        my @sorted = 
-            sort {&$QALG($a, $b)}               # Selected sorting algorithm
+    my $do_poll = !($T % $this->{polling});
+    if ( $do_poll ) {
+        # Any open run slots, and anything wanting to run?
+        while (@{$this->{qrun}} < $this->{maxrun}) {    # I have room
+            # Take first highest priority job from queue
+            my @sorted = 
+                sort {&$QALG($a, $b)}               # Selected sorting algorithm
             grep {$_->{trun} <= $T}             # Must be job's time to run
-                @{$this->{qpend}};
-        last unless @sorted;                    # Exit if nothing eligible
-        my $job = $sorted[0];                   # Take top sorted job
-        $this->move_job($job, state::JOB_RUN, -1);
-        last if $ONE_PER;
+            @{$this->{qpend}};
+            last unless @sorted;                    # Exit if nothing eligible
+            my $job = $sorted[0];                   # Take top sorted job
+            $this->move_job($job, state::JOB_RUN, -1);
+        }
     }
+    
     $tun->{active} = @{$this->{qrun}};
 }
 
@@ -580,8 +544,50 @@ sub rowcol {
 
 sub job::tick {
     my $this = shift;
+    my $tun  = shift;
+    my $par  = shift;
+    
+    # Tunnel down?  Or...
+    # Per-job failure chance?
+    if (($tun->{state} != state::TUN_UP)
+        || (rand(10_000) < $tun->{jfail})) {
 
-    # Nothing to do (yet)...
+        # A job error happened: fail it or requeue it
+        if ($this->{tries} >= $this->{maxtry}) {
+            $this->{trun} = $T;
+            return state::JOB_FAIL;
+        }
+        else {
+            $this->{trun} = $T + 60 * $this->{tries};
+            return state::JOB_PEND;
+        }
+    }
+
+    # Transfer simulation
+    if ($this->{substate} == state::SUB_INIT) {
+
+        # skip one second for init phase, do nothing really
+        $this->{substate} = state::SUB_XFER;
+        return state::JOB_RUN;
+    }
+    elsif ($this->{substate} == state::SUB_XFER) {
+
+        # Simulate transfer of one-second of data
+        $this->{sofar} += int(0.83 * $tun->{Bps} / $par);
+        $this->draw();    # So percentage updates
+
+        # Is job done?
+        if ($this->{sofar} >= $this->{size}) {
+            $this->{sofar}   = $this->{size};
+            $this->{substate} = state::SUB_WRAP;
+        }
+        return state::JOB_RUN;
+    }
+    elsif ($this->{substate} == state::SUB_WRAP) {
+        $this->{trun} = $T;
+        return state::JOB_DONE;
+    }
+
 }
 
 package tunnel;
