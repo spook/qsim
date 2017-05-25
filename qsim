@@ -13,8 +13,7 @@ use Time::HiRes qw/usleep/;
 $| = 1;
 my $T            = 0;       # Simulated time (seconds)
 my $X            = 30;      # Speed factor
-my $JOB_PRIO     = 0;       # Job priority for added (j/J)obs
-my $JOB_PRIO_DEF = 2;       # Default job priority
+my $JOB_PRIO     = 2;       # Job priority for added (j/J)obs
 my $N_JOB        = 0;       # Number of jobs to add for j/J
 my $QALG         = \&alg1;  # Sorting algorithm under test
 
@@ -136,11 +135,10 @@ sub add_job {
     my $big = shift;
     for (1 .. ($N_JOB || 1)) {
         my $job = job->new;
-        $job->{size} = $big ? 512_000_000 : 400_000;
-        $job->{prio} = $JOB_PRIO || $JOB_PRIO_DEF;
+        $job->{size} = $big ? 512_000_000 : 10_000;
+        $job->{prio} = $JOB_PRIO;
         $que->submit($job);
     }
-    $JOB_PRIO = 0;
     $N_JOB    = 0;
 }
 
@@ -173,8 +171,7 @@ sub status {
     print(locate(1, 66), sprintf("n=%d", $N_JOB)) if $N_JOB;
     print(locate(1, 75), "Alg=", &$QALG());
     print(locate(1, 72), 
-            $JOB_PRIO == 1 ? RED "hi" : $JOB_PRIO == 2 ? GREEN "md" : BLACK "lo")
-        if $JOB_PRIO;
+            $JOB_PRIO == 1 ? RED "hi" : $JOB_PRIO == 2 ? GREEN "md" : BLACK "lo");
 
 }
 
@@ -424,13 +421,23 @@ sub job::new {
         row      => undef,                             # Display row
         col      => undef,                             # Display column
         posn     => undef,                             # Position (0-based index) in sub-queue
-        size     => 1_000 + int(rand(512_000_000)),    # simulated job size, in bytes
+        size     => size_dist(),                       # simulated job size, in bytes
         sofar    => 0,                                 # amount transferred so far, in bytes
-        prio     => $JOB_PRIO_DEF,                     # Job priority, 1=best
+        prio     => 1 + int(rand(3)),                     # Job priority, 1=best
     };
     bless $this, $class;
     $this->draw();
     return $this;
+}
+
+sub job::size_dist {
+    # 1_000 + int(rand(512_000_000));
+    my $size = int(rand(100));
+    return ($size<=5) ? 512_000_000
+        : ($size<=15) ? 100_000_000
+        : ($size<=30) ? 1_000_000
+        : ($size<=50) ? 100_000
+        : 1_000;
 }
 
 sub job::clear_jid {
@@ -460,8 +467,8 @@ sub job::draw {
     $color .=
           ($prio == 1) ? RED
         : ($prio == 2) ? GREEN
-        : ($prio == 3) ? WHITE
-        :                YELLOW;
+        : ($prio == 3) ? YELLOW 
+        :                WHITE;
     print $color;
 
     # If RUN state, show percentage of done
@@ -474,7 +481,8 @@ sub job::draw {
     # We'll use underlines, bold, and reverse to indicate try count
     # These encode 5 bits for 0-31 tries; above that there's no differentiation
     $color .= REVERSE if $this->{tries} >= 16;
-    $color .= BOLD if $this->{size} > 100_000_000;
+    $color .= BOLD if $this->{size} >= 100_000_000;
+    $color .= ON_BLUE if ($this->{state} eq state::JOB_PEND && $this->{trun} < $T);
     my $u2 = ($this->{tries} >= 32) || ($this->{tries} & 4);
     my $u1 = ($this->{tries} >= 32) || ($this->{tries} & 2);
     my $u0 = ($this->{tries} >= 32) || ($this->{tries} & 1);
