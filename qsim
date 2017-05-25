@@ -252,6 +252,7 @@ sub queue::clear {
     $que->{qdone} = [];
     $que->{count} = 0;
 
+    $T = 0;
     job::clear_jid();
 }
 
@@ -405,6 +406,7 @@ sub queue::tick {
         $this->move_job($job, state::JOB_RUN, -1);
         last if $ONE_PER;
     }
+    $tun->{active} = @{$this->{qrun}};
 }
 
 # Return index (0-based) where the job belongs in sorted subqueue
@@ -597,6 +599,7 @@ sub tunnel::new {
         mtbf  => 1_000_000,
         jfail => 42,                      # job failure rate per chunk per 10,000.
         state => state::TUN_UP,
+        active  => 0,                     # data send over tunnel
         tup   => 0,                       # time tunnel last came up
         count => 0,                       # bytes sent over tunel since tup
     };
@@ -618,7 +621,7 @@ sub tunnel::draw {
     my $top = $this->{state} ? "───────┘╲" : "·······┘╲";
     my $bot = $this->{state} ? "───────┐╱" : "·······┐╱";
     my $tic = $T % 8;
-    if ($this->{state} && $tic) {
+    if ($this->{state} && $tic && $this->{active}) {
         substr($top, $tic - 1) = "┬";
         substr($bot, $tic - 1) = "┴";
     }
