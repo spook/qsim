@@ -18,22 +18,57 @@ my $N_JOB        = 0;       # Number of jobs to add for j/J
 my $QALG         = \&alg_curr;  # Sorting algorithm under test
 my $IMPL         = "curr";  # implementation (curr/new)
 
+
 # Set b/g
 binmode STDOUT, ":utf8";
 print cls, locate(24, 1), WHITE ON BLACK, clup;
 print "(Q)uit (F)aster (S)lower (P)ause .=Step (c)lear (a)lg#  (t)un   Add (j/J)obs", clline;
 
+
+
 # Inits
 my $tun = tunnel->new;
 my $que = queue->new($tun);
-for (1 .. 35) {
-    my $job = job->new;
-    $que->submit($job);
+my $pause = 0;
+# preload the que
+if (@ARGV) {
+    my $now = 0;
+    foreach (@ARGV) {
+        my $c = chop $_;
+        my $prio = (index($_, "h") != -1) ? 1
+            : (index($_, "m") != -1) ? 2
+            : (index($_, "l") != -1) ? 3
+            : $JOB_PRIO;
+        my $num = $_;
+        $num =~ s/[hml]//g;
+        if ($c eq 'j' || $c eq 'J') {
+            for (1 .. $num) {
+                my $job = job->new;
+                $job->{t0} = $now;
+                $job->{trun} = $now;
+                $job->{size} = ($c eq 'j') ? 10_000 : 512_000_000;
+                $job->{prio} = $prio || $JOB_PRIO;
+                $que->submit($job);
+            }
+        }
+        elsif ($c eq 's') {
+            $now += $_;
+        }
+        else {
+            die "incorrect input $_ : expect like './qsim 10hj 10s 20J'";
+        }
+    }
+    $pause = 1;
+}
+else {
+    for (1 .. 35) {
+        my $job = job->new;
+        $que->submit($job);
+    }
 }
 
 # Run until nothing in pending or running stated
 ReadMode 'raw';
-my $pause = 0;
 while (1) {
 
     # Check for keyboard keystroke
