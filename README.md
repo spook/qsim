@@ -30,11 +30,11 @@ when running qsim, the flow can be controlled via keystrokes:
 * h - next job to create has high prio
 * 1..0 - define number of jobs to create
 
-- current algorithnm<br>
-   polls que every 30s and checks for free upload slots<br>
-   picked jobs are sorted by prio first and then runtime<br>
+current algorithnm<br>
+   * polls que every 30s and checks for free upload slots
+   * picked jobs are sorted by prio first and then runtime
 <br>
-- new algorithm<br>
-   as soon as a slot is available it is used for uploads<br>
-   pick due jobs sorted by prio first and then submit-time<br>
+new algorithm<br>
+   * as soon as a slot is available it is used for uploads
+   * pick due jobs sorted by prio first and then submit-time
 
