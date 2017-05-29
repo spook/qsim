@@ -15,7 +15,8 @@ my $T            = 0;       # Simulated time (seconds)
 my $X            = 30;      # Speed factor
 my $JOB_PRIO     = 2;       # Job priority for added (j/J)obs
 my $N_JOB        = 0;       # Number of jobs to add for j/J
-my $QALG         = \&alg1;  # Sorting algorithm under test
+my $QALG         = \&alg_curr;  # Sorting algorithm under test
+my $IMPL         = "curr";  # implementation (curr/new)
 
 # Set b/g
 binmode STDOUT, ":utf8";
@@ -66,12 +67,8 @@ while (1) {
 
     # Job-selection algorithm to use - rotate thru them
     if ($key eq 'a') {
-        $QALG = ($QALG == \&alg0) ? \&alg1
-              : ($QALG == \&alg1) ? \&alg2
-              : ($QALG == \&alg2) ? \&alg3
-#              : ($QALG == \&alg3) ? \&alg4
-              :                     \&alg0
-              ;
+        $QALG = ($QALG == \&alg_curr) ? \&alg_new : \&alg_curr;
+        $IMPL = ($IMPL eq "curr") ? "new" : "curr";
     }
 
     # Pause toggle
@@ -97,30 +94,18 @@ print locate(24, 1), RESET, clline;
 ReadMode 'normal';
 exit 0;
 
-# Sorting algorithm zero - no sorting at all
-sub alg0 {
-    return 0 if !@_;    # Return algorithm number if no args given
-    return 0;
-}
-
-# Sorting algorithm one - priority only
-sub alg1 {
-    return 1 if !@_;    # Return algorithm number if no args given
-    my ($a, $b) = @_;
-    return $a->{prio} <=> $b->{prio};
-}
-
-# Sorting algorithm two - priority else jid, no regard for trun
-sub alg2 {
+# Sorting algorithm two - priority else t0 (create), no regard for trun
+sub alg_new {
     return 2 if !@_;    # Return algorithm number if no args given
     my ($a, $b) = @_;
     return ($a->{prio} <=> $b->{prio})
+        || ($a->{t0}  <=> $b->{t0})
         || ($a->{jid}  <=> $b->{jid})
         ;
 }
 
 # Sorting algorithm three - priority else trun else jid
-sub alg3 {
+sub alg_curr {
     return 3 if !@_;    # Return algorithm number if no args given
     my ($a, $b) = @_;
     return ($a->{prio} <=> $b->{prio})
@@ -169,7 +154,7 @@ sub status {
     print locate(1, 20),
         sprintf("%d pend, %d/%d run, %d fail, %d done, %d total", $np, $nr, $maxr, $nf, $nd, $tot);
     print(locate(1, 66), sprintf("n=%d", $N_JOB)) if $N_JOB;
-    print(locate(1, 75), "Alg=", &$QALG());
+    print(locate(1, 75), "Alg=", $IMPL);
     print(locate(1, 72), 
             $JOB_PRIO == 1 ? RED "hi" : $JOB_PRIO == 2 ? GREEN "md" : BLACK "lo");
 
@@ -352,8 +337,8 @@ sub queue::tick {
         }
     }
 
-    my $do_poll = !($T % $this->{polling});
-    if ( $do_poll ) {
+    my $do_poll = !($T % $this->{polling}) || ($IMPL eq "new");
+    if ($do_poll) {
         # Any open run slots, and anything wanting to run?
         while (@{$this->{qrun}} < $this->{maxrun}) {    # I have room
             # Take first highest priority job from queue
