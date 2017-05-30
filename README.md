@@ -1,11 +1,28 @@
 # qsim
 Batch queue simulator
-Just a little hack for a one-time task.  Nothing very interesting here.
+Just a little hack for a one-time task.  Nothing very interesting here.  :-/
+If you actually care to use it, its licensed under the MIT License.  So have fun.
 
+Prerequisites:
+- Install the Term::ANSIScreen module
+```
+    sudo cpan Term::ANSIScreen
+      -or-
+    sudo cpanm Term::ANSIScreen
+      -or-
+    sudo perl -MCPAN -e 'install Term::ANSIScreen'
+      -or-
+    ...download the tarball, unpack, cd into dir, then
+         perl Makefile.PL
+         make
+         make test
+         sudo make install
+```
 How it works:
-- run ./qsim (need to have Term::ANSIScreen perl module installed)
-- preload queue (either random) or when starting simulator by passing create instructions
-  ./qsim 10hj 10hJ 5mj 30s 5lJ <br>
+- run ./qsim
+- With no args given on command line, it preloads 35 random jobs
+- Or pass create instructions on the command line, for example  `./qsim 10hj 10hJ 5mj 30s 5lJ`
+
 this creates:<br>
    10 high prio jobs (small files 10k)<br>
    10 high prio jobs (big files 512MB)<br>
@@ -30,11 +47,11 @@ when running qsim, the flow can be controlled via keystrokes:
 * h - next job to create has high prio
 * 1..0 - define number of jobs to create
 
-current algorithnm<br>
-   * polls que every 30s and checks for free upload slots
-   * picked jobs are sorted by prio first and then runtime
-<br>
-new algorithm<br>
-   * as soon as a slot is available it is used for uploads
-   * pick due jobs sorted by prio first and then submit-time
+current algorithnm
+  * polls que every 30s and checks for free upload slots
+  * picked jobs are sorted by prio first and then runtime
+
+new algorithm
+  * as soon as a slot is available it is used for uploads
+  * pick due jobs sorted by prio first and then submit-time
 
