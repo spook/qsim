@@ -15,9 +15,10 @@ my $T            = 0;       # Simulated time (seconds)
 my $X            = 30;      # Speed factor
 my $JOB_PRIO     = 2;       # Job priority for added (j/J)obs
 my $N_JOB        = 0;       # Number of jobs to add for j/J
-my $QALG         = \&alg_curr;  # Sorting algorithm under test
-my $IMPL         = "curr";  # implementation (curr/new)
-
+my $QALG         = \&sort_prio_runtime;  # Sorting algorithm under test
+my $POLL_ON_FREE = 1;       # refills free slots imediately (if not set polls every 30s only)
+my @PRIO_FAIR    = ( 3, 1, 1 ); # 60%,20%,20% out of 5 max
+my $AGED_PRIO_BUMP = 60;    # in seconds, jobs older than this bump their prio by 10%
 
 # Set b/g
 binmode STDOUT, ":utf8";
@@ -102,8 +103,10 @@ while (1) {
 
     # Job-selection algorithm to use - rotate thru them
     if ($key eq 'a') {
-        $QALG = ($QALG == \&alg_curr) ? \&alg_new : \&alg_curr;
-        $IMPL = ($IMPL eq "curr") ? "new" : "curr";
+        $QALG = ($QALG == \&sort_prio_runtime) ? \&sort_prio_submittime
+            : ($QALG == \&sort_prio_submittime) ? \&sort_fair_prio
+            : ($QALG == \&sort_fair_prio) ? \&sort_weighted_aged_prio
+            : \&sort_prio_runtime;
     }
 
     # Pause toggle
@@ -129,26 +132,79 @@ print locate(24, 1), RESET, clline;
 ReadMode 'normal';
 exit 0;
 
-# Sorting algorithm two - priority else t0 (create), no regard for trun
-sub alg_new {
-    return 2 if !@_;    # Return algorithm number if no args given
-    my ($a, $b) = @_;
-    return ($a->{prio} <=> $b->{prio})
-        || ($a->{t0}  <=> $b->{t0})
-        || ($a->{jid}  <=> $b->{jid})
-        ;
+sub prioritize {
+    my @jobs = @{$_[0]};
+    my @running = @{$_[1]};
+
+    @jobs = sort {&$QALG} @jobs;  # Selected sorting algorithm
+    
+    if ($QALG == \&::sort_fair_prio) {
+        @jobs = ::sort_fair_prio2(\@jobs, \@running);
+    }
+    
+    return @jobs;
 }
 
 # Sorting algorithm three - priority else trun else jid
-sub alg_curr {
-    return 3 if !@_;    # Return algorithm number if no args given
-    my ($a, $b) = @_;
+sub sort_prio_runtime {
+    return "prio-runtime" if !@_;    # Return algorithm name if no args given
     return ($a->{prio} <=> $b->{prio})
         || ($a->{trun} <=> $b->{trun})
         || ($a->{jid}  <=> $b->{jid})
         ;
 }
 
+# Sorting algorithm two - priority else t0 (create), no regard for trun
+sub sort_prio_submittime {
+    return "prio-submittime" if !@_;    # Return algorithm name if no args given
+    return ($a->{prio} <=> $b->{prio})
+        || ($a->{t0}  <=> $b->{t0})
+        || ($a->{jid}  <=> $b->{jid})
+        ;
+}
+
+# Sorting weighted priority
+sub sort_weighted_aged_prio {
+    return "weighted-aged-prio" if !@_;    # Return algorithm name if no args given
+    my $weighted_a = $a->{prio} - ((($T - $a->{t0}) / $AGED_PRIO_BUMP) * 0.1);
+    my $weighted_b = $b->{prio} - ((($T - $b->{t0}) / $AGED_PRIO_BUMP) * 0.1);
+
+    return ($weighted_a <=> $weighted_b)
+        || ($a->{t0}  <=> $b->{t0})
+        || ($a->{jid}  <=> $b->{jid})
+        ;
+}
+
+# Sorting fair prio
+sub sort_fair_prio {
+    return "fair-prio" if !@_;    # Return algorithm name if no args given
+    return sort_prio_submittime($a, $b);
+}
+
+sub uniq {
+    my %seen;
+    grep !$seen{$_->{jid}}++, @_;
+}
+
+sub sort_fair_prio2 {
+    my @due_sorted = @{$_[0]};
+    my @running    = @{$_[1]};
+    my @fair;
+
+    foreach my $prio (1..3) {
+        my @r = grep {$_->{prio} == $prio} @running;
+        my $must = $PRIO_FAIR[$prio-1] - scalar @r;
+        if ($must > 0) {
+            my @p = grep {$_->{prio} == $prio} @due_sorted;
+            foreach (0..$must-1) {
+                last if $_ >= scalar @p;
+                push @fair, $p[$_];
+            }
+        }
+    }
+    push @fair, @due_sorted;
+    return uniq(@fair);
+}
 
 sub add_job {
     my $que = shift;
@@ -189,7 +245,7 @@ sub status {
     print locate(1, 20),
         sprintf("%d pend, %d/%d run, %d fail, %d done, %d total", $np, $nr, $maxr, $nf, $nd, $tot);
     print(locate(1, 66), sprintf("n=%d", $N_JOB)) if $N_JOB;
-    print(locate(1, 75), "Alg=", $IMPL);
+    print(locate(1, 75), "Alg=", &$QALG());
     print(locate(1, 72), 
             $JOB_PRIO == 1 ? RED "hi" : $JOB_PRIO == 2 ? GREEN "md" : BLACK "lo");
 
@@ -372,17 +428,18 @@ sub queue::tick {
         }
     }
 
-    my $do_poll = !($T % $this->{polling}) || ($IMPL eq "new");
+    my $do_poll = !($T % $this->{polling}) || $POLL_ON_FREE;
     if ($do_poll) {
         # Any open run slots, and anything wanting to run?
-        while (@{$this->{qrun}} < $this->{maxrun}) {    # I have room
-            # Take first highest priority job from queue
-            my @sorted = 
-                sort {&$QALG($a, $b)}               # Selected sorting algorithm
-            grep {$_->{trun} <= $T}             # Must be job's time to run
-            @{$this->{qpend}};
-            last unless @sorted;                    # Exit if nothing eligible
-            my $job = $sorted[0];                   # Take top sorted job
+        my $free = $this->{maxrun} - @{$this->{qrun}};
+        my @due = grep {$_->{trun} <= $T} @{$this->{qpend}};
+        
+        # Take first highest priority job from queue
+        my @sorted = ::prioritize(\@due, $this->{qrun});
+        foreach (0..$free-1) { # I have room
+            last if ($_ >= @sorted);   # Exit if nothing eligible
+            
+            my $job = $sorted[$_];                   
             $this->move_job($job, state::JOB_RUN, -1);
         }
     }
@@ -631,7 +688,7 @@ sub tunnel::new {
         col => 29,
         Bps => 2_500_000,
         mtbf  => 1_000_000,
-        jfail => 42,                      # job failure rate per chunk per 10,000.
+        jfail => 10,                      # job failure rate per chunk per 10,000.
         state => state::TUN_UP,
         active  => 0,                     # data send over tunnel
         tup   => 0,                       # time tunnel last came up
