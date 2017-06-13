@@ -9,16 +9,17 @@ use utf8;
 use Term::ANSIScreen qw/:color :cursor :screen :constants/;
 use Term::ReadKey;
 use Time::HiRes qw/usleep/;
+use Time::Local;
 
 $| = 1;
 my $T            = 0;       # Simulated time (seconds)
-my $X            = 30;      # Speed factor
+my $X            = 10;      # Speed factor
 my $JOB_PRIO     = 2;       # Job priority for added (j/J)obs
 my $N_JOB        = 0;       # Number of jobs to add for j/J
 my $QALG         = \&sort_prio_runtime;  # Sorting algorithm under test
 my $POLL_ON_FREE = 1;       # refills free slots imediately (if not set polls every 30s only)
 my @PRIO_FAIR    = ( 3, 1, 1 ); # 60%,20%,20% out of 5 max
-my $AGED_PRIO_BUMP = 60;    # in seconds, jobs older than this bump their prio by 10%
+my $AGED_PRIO_BUMP = 2;     # in seconds, every n seconds priority is bumped by 0.15 point
 
 # Set b/g
 binmode STDOUT, ":utf8";
@@ -30,9 +31,48 @@ print "(Q)uit (F)aster (S)lower (P)ause .=Step (c)lear (a)lg#  (t)un   Add (j/J)
 # Inits
 my $tun = tunnel->new;
 my $que = queue->new($tun);
-my $pause = 0;
+my $pause = 1;
+my @preload = qw();
+
 # preload the que
-if (@ARGV) {
+if (@ARGV && -e $ARGV[0]) {
+    my $t0 = 0;
+    
+    my $filename = $ARGV[0];
+    open(my $fh, '<:encoding(UTF-8)', $filename) or die "Could not open file '$filename' $!";
+    print "\n";
+
+    #2017-06-05:15:00:46.706-0700 pri1/SP2mgv7-8popw-ukqxi-3h7ja-z54g6.1699887.event.170605.145615.3+307583.CMB
+    #2017-06-05:15:00:47.707-0700 pri1/SP2mgv7-8popw-ukqxi-3h7ja-z54g6.4UW0001524.event.170605.145617.1+293724.CMB 
+    while (my $row = <$fh>) {
+        chomp $row;
+        next if (!$row || substr($row, 0, 1) eq '#');
+        
+        my ($time) = split(' ', $row, 2);
+        my ($year,$mon,$day,$hour,$min,$sec,$msec) = split(/[-.:]+/, $time);
+        my $ts = timelocal($sec,$min,$hour,$day,$mon-1,$year);
+        if (!$t0) { $t0 = $ts }
+        
+        my $job = job->new;
+        
+        $job->{t0} = ($ts - $t0);
+        $job->{trun} = ($ts - $t0);
+        
+        $job->{size} = ($row =~ /event/) ? 1_000
+            : ($row =~ /dump/) ? 1_000_000
+            : ($row =~ /config/) ? 10_000
+            : 1_000;
+
+        $job->{prio} = ($row =~ /pri1|high/) ? 1
+            : ($row =~ /pri2|med/) ? 2
+            : ($row =~ /pri3|low/) ? 3
+            : 2;
+        
+        push @preload, $job;
+    }
+
+}
+elsif (@ARGV) {
     my $now = 0;
     foreach (@ARGV) {
         my $c = chop $_;
@@ -47,9 +87,10 @@ if (@ARGV) {
                 my $job = job->new;
                 $job->{t0} = $now;
                 $job->{trun} = $now;
-                $job->{size} = ($c eq 'j') ? 10_000 : 512_000_000;
+                $job->{size} = ($c eq 'j') ? 10_000 : 200_000_000;
                 $job->{prio} = $prio || $JOB_PRIO;
-                $que->submit($job);
+                
+                push @preload, $job;
             }
         }
         elsif ($c eq 's') {
@@ -59,14 +100,16 @@ if (@ARGV) {
             die "incorrect input $_ : expect like './qsim 10hj 10s 20J'";
         }
     }
-    $pause = 1;
 }
 else {
     for (1 .. 35) {
         my $job = job->new;
-        $que->submit($job);
+        push @preload, $job;
     }
 }
+
+@preload = sort {$a->{t0} <=> $b->{t0} || $a->{jid} <=> $b->{jid}} @preload;
+
 
 # Run until nothing in pending or running stated
 ReadMode 'raw';
@@ -109,6 +152,8 @@ while (1) {
             : \&sort_prio_runtime;
     }
 
+    $que->load($T);
+    
     # Pause toggle
     $pause = !$pause if lc($key) eq 'p';
     $pause = 1 if $key eq '.';  # Set pause for next pass
@@ -123,6 +168,9 @@ while (1) {
     ++$T;
     $que->tick();
     $tun->tick();
+    $pause = 1 unless (scalar(@{$que->{qpend}}) ||
+                       scalar(@{$que->{qrun}}) ||
+                       scalar(@preload));
     status($que);
 
 }
@@ -166,8 +214,8 @@ sub sort_prio_submittime {
 # Sorting weighted priority
 sub sort_weighted_aged_prio {
     return "weighted-aged-prio" if !@_;    # Return algorithm name if no args given
-    my $weighted_a = $a->{prio} - ((($T - $a->{t0}) / $AGED_PRIO_BUMP) * 0.1);
-    my $weighted_b = $b->{prio} - ((($T - $b->{t0}) / $AGED_PRIO_BUMP) * 0.1);
+    my $weighted_a = $a->{prio} - ((($T - $a->{t0}) / $AGED_PRIO_BUMP) * 0.15);
+    my $weighted_b = $b->{prio} - ((($T - $b->{t0}) / $AGED_PRIO_BUMP) * 0.15);
 
     return ($weighted_a <=> $weighted_b)
         || ($a->{t0}  <=> $b->{t0})
@@ -402,10 +450,26 @@ sub queue::remove {
 sub queue::submit {
     my $this = shift;
     my $job  = shift;
-    $job->{t0}    = $T;                # When queued
+    $job->{t0}    = $T unless $job->{t0};                # When queued
     $job->{state} = state::JOB_PEND;
     ++$this->{count};
     $this->insert($job);
+}
+
+sub queue::load {
+    my $this = shift;
+    my $T    = shift;
+
+    my @keep;
+    foreach (@preload) {
+        if ($_->{t0} <= $T) {
+            $this->submit($_);
+        }
+        else {
+            push @keep, $_;
+        }
+    }
+    @preload = @keep;
 }
 
 # Run the queue
