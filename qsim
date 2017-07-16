@@ -18,7 +18,8 @@ my $JOB_PRIO     = 2;       # Job priority for added (j/J)obs
 my $N_JOB        = 0;       # Number of jobs to add for j/J
 my $QALG         = \&sort_prio_runtime;  # Sorting algorithm under test
 my $POLL_ON_FREE = 1;       # refills free slots imediately (if not set polls every 30s only)
-my @PRIO_FAIR    = ( 3, 1, 1 ); # 60%,20%,20% out of 5 max
+my @PRIO_FAIR    = ( 3, 2, 2 ); # 60%,20%,20% out of 5 max
+my @PRIO_FAIR_O  = ( 2, 1, 1, 5 ); # dedicated high/med/low / pool
 my $AGED_PRIO_BUMP = 2;     # in seconds, every n seconds priority is bumped by 0.15 point
 
 # Set b/g
@@ -58,11 +59,31 @@ if (@ARGV && -e $ARGV[0]) {
         $job->{t0} = ($ts - $t0);
         $job->{trun} = ($ts - $t0);
         
-        $job->{size} = ($row =~ /event/) ? 1_000
-            : ($row =~ /dump/) ? 1_000_000
-            : ($row =~ /config/) ? 10_000
+        $job->{size} = ($row =~ /dump/) ? 10_000_000
+            : ($row =~ /event/) ?      2_342
+            : ($row =~ /SPWDLOG/) ?    2_043_703                                                                                    
+            : ($row =~ /evtlog/) ?     1_033_632                                                                                    
+            : ($row =~ /PROPS/) ?      30                                                                                   
+            : ($row =~ /status/) ?     10_022                                                                                    
+            : ($row =~ /notify/) ?     4_657                                                                                    
+            : ($row =~ /HWINVENT/) ?   29_485                                                                                    
+            : ($row =~ /biosmsg/) ?    136_441
+            : ($row =~ /environ/) ?    49_454
+            : ($row =~ /hostconf/) ?   73_390
+            : ($row =~ /CHKUPG/) ?     939
+            : ($row =~ /eeprom/) ?     3_063
+            : ($row =~ /RESCUE/) ?     146_570
+            : ($row =~ /perform/) ?    1_309_046
+            : ($row =~ /memdata/) ?    68_949
+            : ($row =~ /spconfig/) ?   6_408
+            : ($row =~ /splor/) ?      22
+            : ($row =~ /config/) ?     10_000
             : 1_000;
 
+
+
+
+        
         $job->{prio} = ($row =~ /pri1|high/) ? 1
             : ($row =~ /pri2|med/) ? 2
             : ($row =~ /pri3|low/) ? 3
@@ -148,7 +169,8 @@ while (1) {
     if ($key eq 'a') {
         $QALG = ($QALG == \&sort_prio_runtime) ? \&sort_prio_submittime
             : ($QALG == \&sort_prio_submittime) ? \&sort_fair_prio
-            : ($QALG == \&sort_fair_prio) ? \&sort_weighted_aged_prio
+            : ($QALG == \&sort_fair_prio) ? \&sort_fair_prio_optimized
+            : ($QALG == \&sort_fair_prio_optimized) ? \&sort_weighted_aged_prio
             : \&sort_prio_runtime;
     }
 
@@ -189,6 +211,9 @@ sub prioritize {
     if ($QALG == \&::sort_fair_prio) {
         @jobs = ::sort_fair_prio2(\@jobs, \@running);
     }
+    elsif ($QALG == \&::sort_fair_prio_optimized) {
+        @jobs = ::sort_fair_prio3(\@jobs, \@running);
+    }
     
     return @jobs;
 }
@@ -228,6 +253,10 @@ sub sort_fair_prio {
     return "fair-prio" if !@_;    # Return algorithm name if no args given
     return sort_prio_submittime($a, $b);
 }
+sub sort_fair_prio_optimized {
+    return "fair-prio-o" if !@_;    # Return algorithm name if no args given
+    return sort_prio_submittime($a, $b);
+}
 
 sub uniq {
     my %seen;
@@ -250,8 +279,33 @@ sub sort_fair_prio2 {
             }
         }
     }
-    push @fair, @due_sorted;
+    #push @fair, @due_sorted;
     return uniq(@fair);
+}
+
+sub sort_fair_prio3 {
+    my @due_sorted = @{$_[0]};
+    my @running    = @{$_[1]};
+    my @fair;
+
+    foreach my $prio (1..3) {
+        my @r = grep {$_->{prio} == $prio} @running;
+        my $must = $PRIO_FAIR_O[$prio-1] - scalar @r;
+        if ($must > 0) {
+            my @p = grep {$_->{prio} == $prio} @due_sorted;
+            foreach (0..$must-1) {
+                last if $_ >= scalar @p;
+                push @fair, $p[$_];
+            }
+        }
+    }
+    my $pool = $PRIO_FAIR_O[3];
+    if ( scalar @running + scalar @fair < $pool) {
+        push @fair, @due_sorted;
+        @fair = uniq(@fair);
+        splice @fair, $pool - scalar @running;
+    }
+    return @fair;
 }
 
 sub add_job {
@@ -330,7 +384,7 @@ sub queue::new {
         qdone   => [],
         count   => 0,                      # total count of jobs we've ever processed
         maxpend => 100,                    # max pending that we'll show - queue can grow larger tho
-        maxrun  =>   5,                    # max jobs that can run at a time
+        maxrun  =>   7,                    # max jobs that can run at a time
         maxdone => 140,                    # max done jobs we keep around; we purge after this
         maxfail =>  60,                    # max failed jobs we keep around; we purge after this
         polling =>  30,                    # check for free slots every n seconds/ticks
